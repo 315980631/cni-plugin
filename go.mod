@@ -13,7 +13,8 @@ require (
 	github.com/onsi/gomega v1.7.0
 	github.com/philhofer/fwd v1.0.0 // indirect
 	github.com/pquerna/ffjson v0.0.0-20190813045741-dac163c6c0a9 // indirect
-	github.com/projectcalico/libcalico-go v0.0.0-20200111004125-f4cc1f8914f8
+	//github.com/projectcalico/libcalico-go v0.0.0-20200111004125-f4cc1f8914f8
+	github.com/projectcalico/libcalico-go v0.0.0
 	github.com/safchain/ethtool v0.0.0-20170622225139-7ff1ba29eca2 // indirect
 	github.com/satori/go.uuid v1.2.0
 	github.com/sirupsen/logrus v1.4.2
@@ -31,3 +32,5 @@ require (
 	// k8s.io/client-go 1.16.3 is at 6c5935290e33
 	k8s.io/client-go v0.0.0-20191114101535-6c5935290e33
 )
+
+replace github.com/projectcalico/libcalico-go v0.0.0 => ./libcalico-go@v0.0.0-20200111004125-f4cc1f8914f8
