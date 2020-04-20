@@ -178,6 +178,7 @@ func (p poolAccessor) getPools(filter func(pool *v3.IPPool) bool) ([]v3.IPPool, 
 			filtered = append(filtered, pool)
 		}
 	}
+	//过滤出enable的IPPool
 	return filtered, nil
 }
 

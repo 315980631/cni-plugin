@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"k8s.io/client-go/kubernetes"
 	"net"
 	"os"
 	"regexp"
@@ -37,6 +38,7 @@ import (
 	cnet "github.com/projectcalico/libcalico-go/lib/net"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func Min(a, b int) int {
@@ -576,8 +578,10 @@ func ConfigureLogging(logLevel string) {
 }
 
 // ResolvePools takes an array of CIDRs or IP Pool names and resolves it to a slice of pool CIDRs.
+// ResolvePools采用一组CIDR或IP池名称，并将其解析为池CIDR的一部分
 func ResolvePools(ctx context.Context, c client.Interface, pools []string, isv4 bool) ([]cnet.IPNet, error) {
 	// First, query all IP pools. We need these so we can resolve names to CIDRs.
+	// 首先，查询所有IP池。我们需要这些，以便我们可以将IPPool名称解析为CIDR
 	pl, err := c.IPPools().List(ctx, options.ListOptions{})
 	if err != nil {
 		return nil, err
@@ -585,12 +589,15 @@ func ResolvePools(ctx context.Context, c client.Interface, pools []string, isv4 
 
 	// Iterate through the provided pools. If it parses as a CIDR, just use that.
 	// If it does not parse as a CIDR, then attempt to lookup an IP pool with a matching name.
+	//遍历提供的池。如果将其解析为CIDR，请使用它。如果未将其解析为CIDR，则尝试查找具有匹配名称的IP池
 	result := []cnet.IPNet{}
 	for _, p := range pools {
+		//先将["default-ipv4-ippool", "test1-ipv4-ippool","10.10.0.0/16"]转为CIDR
 		_, cidr, err := net.ParseCIDR(p)
 		if err != nil {
 			// Didn't parse as a CIDR - check if it's the name
 			// of a configured IP pool.
+			//没有解析为CIDR-检查名称是否已配置的IP池。
 			for _, ipp := range pl.Items {
 				if ipp.Name == p {
 					// Found a match. Use the CIDR from the matching pool.
@@ -618,4 +625,24 @@ func ResolvePools(ctx context.Context, c client.Interface, pools []string, isv4 
 		result = append(result, cnet.IPNet{IPNet: *cidr})
 	}
 	return result, nil
+}
+
+// 判断Pod是否属于statefulset并且开启了固定IP
+func VariatePodFixedIP(clientset *kubernetes.Clientset, podname string, podnamespace string) (bool, string, error) {
+	stsName := ""
+	pod, err := clientset.CoreV1().Pods(podnamespace).Get(podname, metav1.GetOptions{})
+	if err != nil {
+		return false, "", err
+	}
+
+	isFixedIP := false
+	for _, owner := range pod.GetOwnerReferences() {
+		if owner.Kind == "StatefulSet" &&
+			pod.Annotations["fixed.ipam.harmonycloud.cn"] == "true" {
+			isFixedIP = true
+			stsName = owner.Name
+		}
+	}
+
+	return isFixedIP, stsName, nil
 }

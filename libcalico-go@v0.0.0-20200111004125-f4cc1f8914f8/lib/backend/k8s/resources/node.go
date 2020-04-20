@@ -203,8 +203,10 @@ func (c *nodeClient) Watch(ctx context.Context, list model.ListInterface, revisi
 }
 
 // K8sNodeToCalico converts a Kubernetes format node, with Calico annotations, to a Calico Node.
+// K8sNodeToCalico将带有Calico annotations的Kubernetes格式节点转换为Calico Node
 func K8sNodeToCalico(k8sNode *kapiv1.Node, usePodCIDR bool) (*model.KVPair, error) {
 	// Create a new CalicoNode resource and copy the settings across from the k8s Node.
+	// 创建一个新的CalicoNode资源，并在k8s节点之间复制设置
 	calicoNode := apiv3.NewNode()
 	calicoNode.ObjectMeta.Name = k8sNode.Name
 	SetCalicoMetadataFromK8sAnnotations(calicoNode, k8sNode)

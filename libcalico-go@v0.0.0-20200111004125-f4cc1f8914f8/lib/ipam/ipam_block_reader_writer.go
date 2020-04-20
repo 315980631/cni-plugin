@@ -38,12 +38,26 @@ type blockReaderWriter struct {
 	pools  PoolAccessorInterface
 }
 
+//获取亲和块、可以释放的亲和块(不属于任何IPPool)
 func (rw blockReaderWriter) getAffineBlocks(ctx context.Context, host string, ver int, pools []v3.IPPool) (blocksInPool, blocksNotInPool []cnet.IPNet, err error) {
 	blocksInPool = []cnet.IPNet{}
 	blocksNotInPool = []cnet.IPNet{}
 
 	// Lookup blocks affine to the specified host.
 	opts := model.BlockAffinityListOptions{Host: host, IPVersion: ver}
+	//获取blockaffinities crd资源对象
+	/*
+		apiVersion: crd.projectcalico.org/v1
+		kind: BlockAffinity
+		metadata:
+		  name: 10.10.102.34-slave-192-168-229-64-26
+		spec:
+		  cidr: 192.168.229.64/26
+		  deleted: ""
+		  node: 10.10.102.34-slave
+		  state: confirmed
+	*/
+	//查询所有和该host亲和的BlockAffinity资源对象
 	datastoreObjs, err := rw.client.List(ctx, opts, "")
 	if err != nil {
 		if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
@@ -57,14 +71,17 @@ func (rw blockReaderWriter) getAffineBlocks(ctx context.Context, host string, ve
 	}
 
 	// Iterate through and extract the block CIDRs.
+	// 遍历并提取块CIDR
 	for _, o := range datastoreObjs.KVPairs {
 		k := o.Key.(model.BlockAffinityKey)
 
 		// Add the block if no IP pools were specified, or if IP pools were specified
 		// and the block falls within the given IP pools.
 		if len(pools) == 0 {
+			// 未指定IP池,全部按照该BlockAffinity块属于某一个IPPool
 			blocksInPool = append(blocksInPool, k.CIDR)
 		} else {
+			// 指定IP池，则添加块并且该块位于给定的IP池内
 			found := false
 			for _, pool := range pools {
 				var poolNet *cnet.IPNet
@@ -75,12 +92,14 @@ func (rw blockReaderWriter) getAffineBlocks(ctx context.Context, host string, ve
 				}
 
 				if poolNet.Contains(k.CIDR.IPNet.IP) {
+					//BlockAffinity属于此次循环的IPPool
 					blocksInPool = append(blocksInPool, k.CIDR)
 					found = true
 					break
 				}
 			}
 			if !found {
+				//BlockAffinity不属于任何IPPool
 				blocksNotInPool = append(blocksNotInPool, k.CIDR)
 			}
 		}
@@ -92,30 +111,44 @@ func (rw blockReaderWriter) getAffineBlocks(ctx context.Context, host string, ve
 // should already be sanitized and only enclude existing, enabled pools. Note that the block may become claimed
 // between receiving the cidr from this function and attempting to claim the corresponding block as this function
 // does not reserve the returned IPNet.
+// findUnclaimedBlock查找在给定IPPool列表中尚不存在的cidr块。提供的IPPool应该已经清理过，并且仅包含已启用的现有池。请注意，
+// 在此函数接收cidr和尝试声明相应的block之间，该block可能已被声明所有权, 不保留返回的IPNet
 func (rw blockReaderWriter) findUnclaimedBlock(ctx context.Context, host string, version int, pools []v3.IPPool, config IPAMConfig) (*cnet.IPNet, error) {
+	// pools为该请求使用的IPPool并且存在且enable的池
 	// If there are no pools, we cannot assign addresses.
+	// 如果没有IPPool，我们将无法分配地址
 	if len(pools) == 0 {
 		return nil, fmt.Errorf("no configured Calico pools for node %s", host)
 	}
 
 	// Iterate through pools to find a new block.
+	// 遍历池以查找新块
 	for _, pool := range pools {
 		// Use a block generator to iterate through all of the blocks
 		// that fall within the pool.
+		// 使用块生成器遍历池中的所有块
 		log.Debugf("Looking for blocks in pool %+v", pool)
+		// randomBlockGenerator() 生成一个函数，每次调用该函数将随机产生一个 block
+		// 遍历每次生成的 block，查看是否已被使用，如果未被使用，则返回对应的 block
 		blocks := randomBlockGenerator(pool, host)
 		for subnet := blocks(); subnet != nil; subnet = blocks() {
 			// Check if a block already exists for this subnet.
+			// 检查该子网是否已经存在一个块
 			log.Debugf("Getting block: %s", subnet.String())
+			//根据cidr查询ipamblocks资源对象
+			//比如cidr为192.168.123.192/26,则ipamblocks的name则为192-168-123-192-26
 			_, err := rw.queryBlock(ctx, *subnet, "")
+			// 如果发生错误
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
 					log.Infof("Found free block: %+v", *subnet)
+					//不存在,满足要求; 返回未被使用的cidr
 					return subnet, nil
 				}
 				log.Errorf("Error getting block: %v", err)
 				return nil, err
 			}
+			//已存在,不满足要求
 			log.Debugf("Block %s already exists", subnet.String())
 		}
 	}
@@ -162,6 +195,8 @@ func (rw blockReaderWriter) getPendingAffinity(ctx context.Context, host string,
 
 // claimAffineBlock claims the provided block using the given pending affinity. If successful, it will confirm the affinity. If another host
 // steals the block, claimAffineBlock will attempt to delete the provided pending affinity.
+// ClaimAffineBlock使用给定的未决亲缘关系声明提供的块。 如果成功，它将确认亲和力。 如果另一个主机
+//窃取该块，claimAffineBlock将尝试删除提供的未决亲缘关系。
 func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVPair, config IPAMConfig) (*model.KVPair, error) {
 	// Pull out relevant fields.
 	subnet := aff.Key.(model.BlockAffinityKey).CIDR
@@ -175,6 +210,7 @@ func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVP
 	block.StrictAffinity = config.StrictAffinity
 
 	// Create the new block in the datastore.
+	//创建ipamblocks资源对象
 	o := model.KVPair{
 		Key:   model.BlockKey{CIDR: block.CIDR},
 		Value: block.AllocationBlock,
@@ -184,11 +220,14 @@ func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVP
 	if err != nil {
 		if _, ok := err.(cerrors.ErrorResourceAlreadyExists); ok {
 			// Block already exists, check affinity.
+			//创建ipamblocks资源对象时报已存在的错误
 			logCtx.Info("The block already exists, getting it from data store")
+			//根据传入的cidr查询该已存在的ipamblocks资源对象
 			obj, err := rw.queryBlock(ctx, subnet, "")
 			if err != nil {
 				// We failed to create the block, but the affinity still exists. We don't know
 				// if someone else beat us to the block since we can't get it.
+				//我们未能创建该块，但亲和力仍然存在。 因为我们无法查到它，我们不知道是否有人击败我们
 				logCtx.WithError(err).Errorf("Error reading block")
 				return nil, err
 			}
@@ -196,11 +235,14 @@ func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVP
 			// Pull out the allocationBlock object.
 			b := allocationBlock{obj.Value.(*model.AllocationBlock)}
 
+			//如果上面查到的ipamblocks——obj的spec.affinity参数和传入的blockaffinities的spec.node是一致的
 			if b.Affinity != nil && *b.Affinity == affinityKeyStr {
 				// Block has affinity to this host, meaning another
 				// process on this host claimed it. Confirm the affinity
 				// and return the existing block.
+				// Block与该主机具有亲和力，这意味着该主机上的另一个进程声明了它。 确认关联并返回现有块
 				logCtx.Info("Block is already claimed by this host, confirm the affinity")
+				//把blockaffinities资源对象的spec.state更新为confirmed
 				if _, err := rw.confirmAffinity(ctx, aff); err != nil {
 					return nil, err
 				}
@@ -208,9 +250,11 @@ func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVP
 			}
 
 			// Some other host beat us to this block.  Cleanup and return an error.
+			// 其他一些host人击败了我们。 清理并返回错误
 			log.Info("Block is owned by another host, delete our pending affinity")
 			if err = rw.deleteAffinity(ctx, aff); err != nil {
 				// Failed to clean up our claim to this block.
+				// 无法清理我们申明的该block
 				logCtx.WithError(err).Errorf("Error deleting block affinity")
 			}
 			return nil, errBlockClaimConflict{Block: b}
@@ -220,6 +264,7 @@ func (rw blockReaderWriter) claimAffineBlock(ctx context.Context, aff *model.KVP
 	}
 
 	// We've successfully claimed the block - confirm the affinity.
+	// 我们已成功声明该 block -确认亲和性
 	log.Info("Successfully created block")
 	if _, err = rw.confirmAffinity(ctx, aff); err != nil {
 		return nil, err
@@ -233,13 +278,16 @@ func (rw blockReaderWriter) confirmAffinity(ctx context.Context, aff *model.KVPa
 	logCtx := log.WithFields(log.Fields{"host": host, "subnet": cidr})
 	logCtx.Info("Confirming affinity")
 	aff.Value.(*model.BlockAffinity).State = model.StateConfirmed
+	//把blockaffinities资源对象的spec.state更新为confirmed
 	confirmed, err := rw.updateAffinity(ctx, aff)
 	if err != nil {
 		// We couldn't confirm the block - check to see if it was confirmed by
 		// another process.
+		//我们无法确认该区块-请检查该区块是否已被其他进程确认
 		kvp, err2 := rw.queryAffinity(ctx, host, cidr, "")
 		if err2 == nil && kvp.Value.(*model.BlockAffinity).State == model.StateConfirmed {
 			// Confirmed by someone else - we can use this.
+			// 由其他人确认-我们可以使用它
 			logCtx.Info("Affinity is already confirmed")
 			return kvp, nil
 		}
@@ -252,6 +300,7 @@ func (rw blockReaderWriter) confirmAffinity(ctx context.Context, aff *model.KVPa
 
 // releaseBlockAffinity releases the host's affinity to the given block, and returns an affinityClaimedError if
 // the host does not claim an affinity for the block.
+// releaseBlockAffinity释放主机对给定块的亲和力，如果主机不声明对该块的亲和性，则返回affinityClaimedError
 func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host string, blockCIDR cnet.IPNet, requireEmpty bool) error {
 	// Make sure hostname is not empty.
 	if host == "" {
@@ -262,6 +311,7 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 	// Read the model.KVPair containing the block affinity.
 	logCtx := log.WithFields(log.Fields{"host": host, "subnet": blockCIDR.String()})
 	logCtx.Debugf("Attempt to release affinity for block")
+	// 根据host和CIDR查询BlockAffinity
 	aff, err := rw.queryAffinity(ctx, host, blockCIDR, "")
 	if err != nil {
 		logCtx.WithError(err).Errorf("Error getting block affinity %s", blockCIDR.String())
@@ -271,6 +321,8 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 	// Read the model.KVPair containing the block
 	// and pull out the allocationBlock object.  We need to hold on to this
 	// so that we can pass it back to the datastore on Update.
+	//读取包含块的model.KVPair并拉出distributionBlock对象。 我们需要坚持这一点，以便我们可以将其传递回Update上的数据存储
+	//根据cidr，查询ipamblock资源对象，比如cidr为192.168.123.192/26,则ipamblocks的name则为192-168-123-192-26
 	obj, err := rw.queryBlock(ctx, blockCIDR, "")
 	if err != nil {
 		logCtx.WithError(err).Warnf("Error getting block")
@@ -279,8 +331,10 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 	b := allocationBlock{obj.Value.(*model.AllocationBlock)}
 
 	// Check that the block affinity matches the given affinity.
+	//检查块关联性是否与给定的关联性匹配
 	if b.Affinity != nil && !hostAffinityMatches(host, b.AllocationBlock) {
 		// This means the affinity is stale - we can delete it.
+		// 这表示亲和性已过时-我们可以将其删除
 		logCtx.Errorf("Mismatched affinity: %s != %s - try to delete stale affinity", *b.Affinity, "host:"+host)
 		if err := rw.deleteAffinity(ctx, aff); err != nil {
 			logCtx.Warn("Failed to delete stale affinity")
@@ -289,12 +343,14 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 	}
 
 	// Don't release block affinity if we require it to be empty and it's not empty.
+	//如果我们要求块亲和性不为空且不为空，则不要释放块相似性
 	if requireEmpty && !b.empty() {
 		logCtx.Info("Block must be empty but is not empty, refusing to remove affinity.")
 		return errBlockNotEmpty{Block: b}
 	}
 
 	// Mark the affinity as pending deletion.
+	//将ipamblocks资源对象标记为待删除
 	aff.Value.(*model.BlockAffinity).State = model.StatePendingDeletion
 	aff, err = rw.updateAffinity(ctx, aff)
 	if err != nil {
@@ -304,7 +360,9 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 
 	if b.empty() {
 		// If the block is empty, we can delete it.
+		// 如果该块为空，我们可以将其删除
 		logCtx.Debug("Block is empty - delete it")
+		//删除ipamblocks资源对象
 		err := rw.deleteBlock(ctx, obj)
 		if err != nil {
 			if _, ok := err.(cerrors.ErrorResourceDoesNotExist); !ok {
@@ -318,12 +376,15 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 		// This prevents the host from automatically assigning
 		// from this block unless we're allowed to overflow into
 		// non-affine blocks.
+		// 否则，我们需要从中移除亲和关系。除非允许我们溢出到非亲缘关系块中，否则这将阻止主机从该块中自动分配
 		logCtx.Debug("Block is not empty - remove the affinity")
 		b.Affinity = nil
 
 		// Pass back the original KVPair with the new
 		// block information so we can do a CAS.
+		// 回传原始的KVPair与新的ipamblocks信息，以便我们执行CAS
 		obj.Value = b.AllocationBlock
+		//将ipamblocks资源对象的spec.affinity更新为nil
 		_, err = rw.updateBlock(ctx, obj)
 		if err != nil {
 			logCtx.WithError(err).Error("Failed to remove affinity from block")
@@ -332,8 +393,10 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 	}
 
 	// We've removed / updated the block, so perform a compare-and-delete on the BlockAffinity.
+	//我们已经删除/更新了该块，因此对BlockAffinity进行比较并删除
 	if err := rw.deleteAffinity(ctx, aff); err != nil {
 		// Return the error unless the affinity didn't exist.
+		// 除非亲和力不存在，否则返回错误
 		if _, ok := err.(cerrors.ErrorResourceDoesNotExist); !ok {
 			logCtx.Errorf("Error deleting block affinity: %v", err)
 			return err
@@ -343,32 +406,37 @@ func (rw blockReaderWriter) releaseBlockAffinity(ctx context.Context, host strin
 }
 
 // queryAffinity gets an affinity for the given host + CIDR key.
+// queryAffinity获取给定主机+ CIDR key的亲和性块BlockAffinity资源对象
 func (rw blockReaderWriter) queryAffinity(ctx context.Context, host string, cidr cnet.IPNet, revision string) (*model.KVPair, error) {
 	return rw.client.Get(ctx, model.BlockAffinityKey{Host: host, CIDR: cidr}, revision)
 }
 
-// updateAffinity updates the given affinity.
+// updateAffinity updates the given affinity. BlockAffinity资源对象
 func (rw blockReaderWriter) updateAffinity(ctx context.Context, aff *model.KVPair) (*model.KVPair, error) {
 	return rw.client.Update(ctx, aff)
 }
 
 // deleteAffinity deletes the given affinity.
+//deleteAffinity删除给定的亲和 BlockAffinity资源对象
 func (rw blockReaderWriter) deleteAffinity(ctx context.Context, aff *model.KVPair) error {
 	_, err := rw.client.DeleteKVP(ctx, aff)
 	return err
 }
 
 // queryBlock gets a block for the given block CIDR key.
+// 根据给定的CIDR key查找ipamblocks资源对象
 func (rw blockReaderWriter) queryBlock(ctx context.Context, blockCIDR cnet.IPNet, revision string) (*model.KVPair, error) {
 	return rw.client.Get(ctx, model.BlockKey{CIDR: blockCIDR}, revision)
 }
 
 // updateBlock updates the given block.
+// ipamblocks资源对象
 func (rw blockReaderWriter) updateBlock(ctx context.Context, b *model.KVPair) (*model.KVPair, error) {
 	return rw.client.Update(ctx, b)
 }
 
 // deleteBlock deletes the given block.
+// ipamblocks资源对象
 func (rw blockReaderWriter) deleteBlock(ctx context.Context, b *model.KVPair) error {
 	_, err := rw.client.DeleteKVP(ctx, b)
 	return err
@@ -392,6 +460,7 @@ func (rw blockReaderWriter) deleteHandle(ctx context.Context, kvp *model.KVPair)
 
 // getPoolForIP returns the pool if the given IP is within a configured
 // Calico pool, and nil otherwise.
+// 如果给定IP在配置的pool中，getPoolForIP返回calico pool，否则返回nil。
 func (rw blockReaderWriter) getPoolForIP(ip cnet.IP, enabledPools []v3.IPPool) (*v3.IPPool, error) {
 	if enabledPools == nil {
 		var err error
@@ -402,6 +471,7 @@ func (rw blockReaderWriter) getPoolForIP(ip cnet.IP, enabledPools []v3.IPPool) (
 	}
 	for _, p := range enabledPools {
 		// Compare any enabled pools.
+		// 将转入的IP和enable的所有pool比较;返回包含该IP的Pool
 		_, pool, err := cnet.ParseCIDR(p.Spec.CIDR)
 		if err != nil {
 			fields := log.Fields{"pool": p.Name, "cidr": p.Spec.CIDR}

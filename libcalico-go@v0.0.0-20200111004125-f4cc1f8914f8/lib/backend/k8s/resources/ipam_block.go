@@ -181,6 +181,7 @@ func (c *ipamBlockClient) Update(ctx context.Context, kvp *model.KVPair) (*model
 func (c *ipamBlockClient) DeleteKVP(ctx context.Context, kvp *model.KVPair) (*model.KVPair, error) {
 	// We need to mark as deleted first, since the Kubernetes API doesn't support
 	// compare-and-delete. This update operation allows us to eliminate races with other clients.
+	//由于Kubernetes API不支持比较并删除，因此我们需要先将其标记为已删除; 此更新操作使我们可以消除与其他客户端的竞争。
 	name, _ := c.parseKey(kvp.Key)
 	kvp.Value.(*model.AllocationBlock).Deleted = true
 	v1kvp, err := c.Update(ctx, kvp)
@@ -189,6 +190,7 @@ func (c *ipamBlockClient) DeleteKVP(ctx context.Context, kvp *model.KVPair) (*mo
 	}
 
 	// Now actually delete the object.
+	// 现在实际上删除对象
 	k := model.ResourceKey{Name: name, Kind: apiv3.KindIPAMBlock}
 	kvp, err = c.rc.Delete(ctx, k, v1kvp.Revision, kvp.UID)
 	if err != nil {
@@ -208,6 +210,8 @@ func (c *ipamBlockClient) Delete(ctx context.Context, key model.Key, revision st
 
 func (c *ipamBlockClient) Get(ctx context.Context, key model.Key, revision string) (*model.KVPair, error) {
 	// Get the object.
+	// 将cidr转换为ipamblocks资源对象的name
+	// 比如cidr为192.168.123.192/26,则ipamblocks的name则为192-168-123-192-26
 	name, _ := c.parseKey(key)
 	k := model.ResourceKey{Name: name, Kind: apiv3.KindIPAMBlock}
 	kvp, err := c.rc.Get(ctx, k, revision)
@@ -216,6 +220,7 @@ func (c *ipamBlockClient) Get(ctx context.Context, key model.Key, revision strin
 	}
 
 	// Convert it back to V1 format.
+	// 转换为v1格式
 	v1kvp, err := c.toV1(kvp)
 	if err != nil {
 		return nil, err
@@ -223,6 +228,7 @@ func (c *ipamBlockClient) Get(ctx context.Context, key model.Key, revision strin
 
 	// If this object has been marked as deleted, then we need to clean it up and
 	// return not found.
+	// 如果此对象已被标记为已删除，则需要对其进行清理并返回找不到
 	if v1kvp.Value.(*model.AllocationBlock).Deleted {
 		if _, err := c.DeleteKVP(ctx, v1kvp); err != nil {
 			return nil, err

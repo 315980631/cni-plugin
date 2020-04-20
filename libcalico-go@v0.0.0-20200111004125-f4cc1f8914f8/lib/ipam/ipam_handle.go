@@ -38,6 +38,17 @@ func (h allocationHandle) incrementBlock(blockCidr cnet.IPNet, num int) int {
 	return newNum
 }
 
+//递减ipamhandles.spec.block
+/*
+apiVersion: crd.projectcalico.org/v1
+kind: IPAMHandle
+metadata:
+  name: k8s-pod-network.a78d2a5bda51f24338408ea3c08788ffe5bd9f0b942f0682d3ddf4202ae7200f
+spec:
+  block:
+    192.168.198.0/26: 1
+  handleID: k8s-pod-network.a78d2a5bda51f24338408ea3c08788ffe5bd9f0b942f0682d3ddf4202ae7200f
+*/
 func (h allocationHandle) decrementBlock(blockCidr cnet.IPNet, num int) (*int, error) {
 	blockId := blockCidr.String()
 	if current, ok := h.Block[blockId]; !ok {
@@ -52,8 +63,10 @@ func (h allocationHandle) decrementBlock(blockCidr cnet.IPNet, num int) (*int, e
 		}
 
 		if newNum == 0 {
+			//从map中删除该cidr的key
 			delete(h.Block, blockId)
 		} else {
+			//不==0时，map的value减去释放的IP数
 			h.Block[blockId] = newNum
 		}
 		return &newNum, nil

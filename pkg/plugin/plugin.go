@@ -435,6 +435,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Print result to stdout, in the format defined by the requested cniVersion.
+	//step7，将结果格式化，并打印到输出流
 	return cnitypes.PrintResult(result, conf.CNIVersion)
 }
 

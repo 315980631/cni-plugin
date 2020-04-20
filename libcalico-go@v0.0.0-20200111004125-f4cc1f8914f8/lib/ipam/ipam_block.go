@@ -58,10 +58,12 @@ func newBlock(cidr cnet.IPNet) allocationBlock {
 }
 
 func (b *allocationBlock) autoAssign(
-	num int, handleID *string, host string, attrs map[string]string, affinityCheck bool) ([]cnet.IPNet, error) {
+	num int, handleID *string, host string, attrs map[string]string, affinityCheck bool, excludeIPs []cnet.IPNet) ([]cnet.IPNet, error) {
 
 	// Determine if we need to check for affinity.
+	// 确定我们是否需要检查亲和力
 	checkAffinity := b.StrictAffinity || affinityCheck
+	//如果ipamblocks的spec.affinity和传入的host不匹配
 	if checkAffinity && b.Affinity != nil && !hostAffinityMatches(host, b.AllocationBlock) {
 		// Affinity check is enabled but the host does not match - error.
 		s := fmt.Sprintf("Block affinity (%s) does not match provided (%s)", *b.Affinity, host)
@@ -69,25 +71,54 @@ func (b *allocationBlock) autoAssign(
 	} else if b.Affinity == nil {
 		log.Warnf("Attempting to assign IPs from block with no affinity: %v", b)
 		if checkAffinity {
+			//需要检查亲和力,但该ipamblocks的spec.affinity为nil，所以返回错误
 			// If we're checking strict affinity, we can't assign from a block with no affinity.
 			return nil, fmt.Errorf("Attempt to assign from block %v with no affinity", b.CIDR)
 		}
 	}
 
+	_, mask, _ := cnet.ParseCIDR(b.CIDR.String())
 	// Walk the allocations until we find enough addresses.
+	// 遍历分配，直到找到足够的地址
 	ordinals := []int{}
 	for len(b.Unallocated) > 0 && len(ordinals) < num {
-		ordinals = append(ordinals, b.Unallocated[0])
+		//这里进行过滤,过滤掉所有固定IP的占用
+		ordinal := b.Unallocated[0]
+		ipNets := cnet.IPNet(*mask)
+		ipNets.IP = cnet.IncrementIP(cnet.IP{b.CIDR.IP}, big.NewInt(int64(ordinal))).IP
+		//循环过滤，固定IP pod多，这里会耗时
+		isExcludeIP := false
+		for _, excludeIP := range excludeIPs {
+			if excludeIP.String() == ipNets.String() {
+				//已被固定IP占用
+				isExcludeIP = true
+				break
+			}
+		}
+		//过滤掉
+		if isExcludeIP {
+			continue
+		}
+
+		//没有被占用
+		//ipamblocks.spec.unallocated的第一个元素
+		ordinals = append(ordinals, ordinal)
+		//ipamblocks.spec.unallocated剩下的元素;调用者会去更新ipamblocks.spec.Unallocated
 		b.Unallocated = b.Unallocated[1:]
 	}
 
 	// Create slice of IPs and perform the allocations.
+	// 创建IP切片并执行分配
 	ips := []cnet.IPNet{}
-	_, mask, _ := cnet.ParseCIDR(b.CIDR.String())
+
+	//如果ipamblocks的spec.unallocated长度不为0
+	// ordinals中包含num(需要分配的IP数)个元素
 	for _, o := range ordinals {
 		attrIndex := b.findOrAddAttribute(handleID, attrs)
+		//调用者会去更新ipamblocks.spec.Allocations
 		b.Allocations[o] = &attrIndex
 		ipNets := cnet.IPNet(*mask)
+		//比如ipamblocks.spec.cidr为192.168.123.192/26,则结果则为192+spec.unallocated
 		ipNets.IP = cnet.IncrementIP(cnet.IP{b.CIDR.IP}, big.NewInt(int64(o))).IP
 		ips = append(ips, ipNets)
 	}
@@ -151,6 +182,7 @@ func (b allocationBlock) numFreeAddresses() int {
 
 // empty returns true if the block has released all of its assignable addresses,
 // and returns false if any assignable addresses are in use.
+//如果该块释放了其所有可分配地址，则返回true；如果正在使用任何可分配地址，则返回false
 func (b allocationBlock) empty() bool {
 	return b.containsOnlyReservedIPs()
 }
@@ -321,6 +353,7 @@ func (b *allocationBlock) releaseByHandle(handleID string) int {
 	log.Debugf("Attribute indexes to release: %v", attrIndexes)
 	if len(attrIndexes) == 0 {
 		// Nothing to release.
+		// 没有要释放的
 		log.Debugf("No addresses assigned to handle '%s'", handleID)
 		return 0
 	}
@@ -336,6 +369,7 @@ func (b *allocationBlock) releaseByHandle(handleID string) int {
 		}
 	}
 
+	//由调用者去更新ipamblocks的Unallocated、Allocations、Attributes等
 	// Clean and reorder attributes.
 	b.deleteAttributes(attrIndexes, ordinals)
 
@@ -344,6 +378,7 @@ func (b *allocationBlock) releaseByHandle(handleID string) int {
 		b.Allocations[o] = nil
 		b.Unallocated = append(b.Unallocated, o)
 	}
+	//返回释放的IP数
 	return len(ordinals)
 }
 
@@ -392,6 +427,7 @@ func (b *allocationBlock) findOrAddAttribute(handleID *string, attrs map[string]
 	// Does not exist - add it.
 	logCtx.Debugf("New allocation attribute: %#v", attr)
 	attrIndex := len(b.Attributes)
+	//调用者会去更新ipamblocks.spec.Attributes
 	b.Attributes = append(b.Attributes, attr)
 	return attrIndex
 }

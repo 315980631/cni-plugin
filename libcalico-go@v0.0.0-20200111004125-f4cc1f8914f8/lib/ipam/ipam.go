@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
 	log "github.com/sirupsen/logrus"
 
 	v3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
@@ -77,9 +76,13 @@ type ipamClient struct {
 // and the list of the assigned IPv6 addresses.
 //
 // In case of error, returns the IPs allocated so far along with the error.
+// AutoAssign自动分配一个或多个IP地址，具体由提供的AutoAssignArgs控制。 自动分配会返回分配的IPv4地址的列表， 和分配的IPv6地址列表。
+//如果出现错误，则返回到目前为止分配的IP和错误。
 func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) ([]net.IPNet, []net.IPNet, error) {
 	// Determine the hostname to use - prefer the provided hostname if
 	// non-nil, otherwise use the hostname reported by os.
+	//确定要使用的主机名-如果提供的主机名(即CNI配置中的nodename)非null,则优先使用;
+	//否则使用os报告的主机名。
 	hostname, err := decideHostname(args.Hostname)
 	if err != nil {
 		return nil, nil, err
@@ -96,7 +99,8 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) ([]net.
 				return nil, nil, fmt.Errorf("provided IPv4 IPPools list contains one or more IPv6 IPPools")
 			}
 		}
-		v4list, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost)
+		//参数args.Num4为要分配的IP数,args.IPv4Pools为calico二进制根据pod、namespaces的annotations放入,hostname为主机名nodename,args.MaxBlocksPerHost指定每ipv4或者ipv6最大可申请的亲和快数
+		v4list, err = c.autoAssign(ctx, args.Num4, args.HandleID, args.Attrs, args.IPv4Pools, 4, hostname, args.MaxBlocksPerHost, args.ExcludeIPs)
 		if err != nil {
 			log.Errorf("Error assigning IPV4 addresses: %v", err)
 			return v4list, nil, err
@@ -111,7 +115,7 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) ([]net.
 				return nil, nil, fmt.Errorf("provided IPv6 IPPools list contains one or more IPv4 IPPools")
 			}
 		}
-		v6list, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost)
+		v6list, err = c.autoAssign(ctx, args.Num6, args.HandleID, args.Attrs, args.IPv6Pools, 6, hostname, args.MaxBlocksPerHost, args.ExcludeIPs)
 		if err != nil {
 			log.Errorf("Error assigning IPV6 addresses: %v", err)
 			return v4list, v6list, err
@@ -124,21 +128,27 @@ func (c ipamClient) AutoAssign(ctx context.Context, args AutoAssignArgs) ([]net.
 // getBlockFromAffinity returns the block referenced by the given affinity, attempting to create it if
 // it does not exist. getBlockFromAffinity will delete the provided affinity if it does not match the actual
 // affinity of the block.
+// getBlockFromAffinity返回给定亲和力引用的块ipamblocks，如果不存在则尝试创建它。 如果与块的实际亲和度不匹配，则getBlockFromAffinity将删除提供的亲和度
 func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair) (*model.KVPair, error) {
 	// Parse out affinity data.
+	//解析关联数据
 	cidr := aff.Key.(model.BlockAffinityKey).CIDR
 	host := aff.Key.(model.BlockAffinityKey).Host
 	state := aff.Value.(*model.BlockAffinity).State
 	logCtx := log.WithFields(log.Fields{"host": host, "cidr": cidr})
 
 	// Get the block referenced by this affinity.
+	// 获取此关联引用的ipamblocks块
 	logCtx.Info("Attempting to load block")
 	b, err := c.blockReaderWriter.queryBlock(ctx, cidr, "")
+	//获取ipamblocks块发生错误
 	if err != nil {
 		if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
 			// The block referenced by the affinity doesn't exist. Try to create it.
+			//ipamblocks块不存在，需要创建它，先更新blockaffinities的spec.state为pending
 			logCtx.Info("The referenced block doesn't exist, trying to create it")
 			aff.Value.(*model.BlockAffinity).State = model.StatePending
+			//更新blockaffinities
 			aff, err = c.blockReaderWriter.updateAffinity(ctx, aff)
 			if err != nil {
 				logCtx.WithError(err).Warn("Error updating block affinity")
@@ -154,6 +164,7 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 
 			// Claim the block, which will also confirm the affinity.
 			logCtx.Info("Attempting to claim the block")
+			//创建ipamblocks,并将blockaffinities的spec.state更新为confirmed
 			b, err := c.blockReaderWriter.claimAffineBlock(ctx, aff, *cfg)
 			if err != nil {
 				logCtx.WithError(err).Warn("Error claiming block")
@@ -165,11 +176,14 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 		return nil, err
 	}
 
+	//获取ipamblocks块正常会到这里
 	// If the block doesn't match the affinity, it means we've got a stale affininty hanging around.
 	// We should remove it.
+	// 如果该块与亲和力不匹配，则意味着我们周围有陈旧的亲和力，应将其删除
 	blockAffinity := b.Value.(*model.AllocationBlock).Affinity
 	if blockAffinity == nil || *blockAffinity != fmt.Sprintf("host:%s", host) {
 		logCtx.WithField("blockAffinity", blockAffinity).Warn("Block does not match the provided affinity, deleting stale affinity")
+		//删除blockaffinities
 		err := c.blockReaderWriter.deleteAffinity(ctx, aff)
 		if err != nil {
 			logCtx.WithError(err).Warn("Error deleting stale affinity")
@@ -180,10 +194,12 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 
 	// If the block does match the affinity but the affinity has not been confirmed,
 	// try to confirm it. Treat empty string as confirmed for compatibility with older data.
+	//如果该块确实与相似性匹配，但尚未确认相似性，请尝试确认它。为兼容性旧数据，将空字符串视为已确认
 	if state != model.StateConfirmed && state != "" {
 		// Write the affinity as pending.
 		logCtx.Info("Affinity has not been confirmed - attempt to confirm it")
 		aff.Value.(*model.BlockAffinity).State = model.StatePending
+		//先更新blockaffinities的spec.state为pending
 		aff, err = c.blockReaderWriter.updateAffinity(ctx, aff)
 		if err != nil {
 			logCtx.WithError(err).Warn("Error marking affinity as pending as part of confirmation process")
@@ -192,7 +208,9 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 
 		// CAS the block to get a new revision and invalidate any other instances
 		// that might be trying to operate on the block.
+		// CAS块以获得新的修订版本，并使可能试图对该块进行操作的任何其他实例无效
 		logCtx.Info("Writing block to get a new revision")
+		// 将上面查到的ipamblocks更新，获取一个新版本ipamblocks
 		b, err = c.blockReaderWriter.updateBlock(ctx, b)
 		if err != nil {
 			logCtx.WithError(err).Debug("Error writing block")
@@ -202,6 +220,7 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 		// Confirm the affinity.
 		logCtx.Info("Attempting to confirm affinity")
 		aff.Value.(*model.BlockAffinity).State = model.StateConfirmed
+		// 将blockaffinities的spec.state更新为confirmed
 		aff, err = c.blockReaderWriter.updateAffinity(ctx, aff)
 		if err != nil {
 			logCtx.WithError(err).Debug("Error confirming affinity")
@@ -218,8 +237,14 @@ func (c ipamClient) getBlockFromAffinity(ctx context.Context, aff *model.KVPair)
 // If no pools are requested, all enabled pools are returned.
 // Also applies selector logic on node labels to determine if the pool is a match.
 // Returns the set of matching pools as well as the full set of ip pools.
+// definePools将请求的池列表与已启用的池进行比较，并返回相交。
+//如果任何请求的池不存在或未启用，则返回错误。
+//如果不请求任何池，则返回所有启用的池。
+//还对节点标签应用选择器逻辑，以确定池是否匹配。
+//返回一组匹配池以及完整的IP池。
 func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, node v3.Node) (matchingPools, enabledPools []v3.IPPool, err error) {
 	// Get all the enabled IP pools from the datastore.
+	// 从数据存储中获取所有已启用的IPPool
 	enabledPools, err = c.pools.GetEnabledPools(version)
 	if err != nil {
 		log.WithError(err).Errorf("Error getting IP pools")
@@ -229,6 +254,8 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 	log.Debugf("requested pools: %v", requestedPoolNets)
 
 	// Build a map so we can lookup existing pools by their CIDR.
+	// 制作一个map，以便我们可以通过其CIDR查找现有Pool
+	// key为string CIDR 如: 10.10.0.0/16, value为IPPool结构体本身
 	pm := map[string]v3.IPPool{}
 	for _, p := range enabledPools {
 		pm[p.Spec.CIDR] = p
@@ -236,13 +263,16 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 
 	// Build a list of requested IP pool objects based on the provided CIDRs, validating
 	// that each one actually exists and is enabled for IPAM.
+	// 根据提供的CIDR建立请求的IP池对象列表，以验证每个都实际存在并启用了IPAM。
 	requestedPools := []v3.IPPool{}
 	for _, rp := range requestedPoolNets {
 		if pool, ok := pm[rp.String()]; !ok {
 			// The requested pool doesn't exist.
+			// 请求的IPPool不是enable,或者不存在
 			err = fmt.Errorf("the given pool (%s) does not exist, or is not enabled", rp.IPNet.String())
 			return
 		} else {
+			//请求的并且存在,且enable的池
 			requestedPools = append(requestedPools, pool)
 		}
 	}
@@ -250,6 +280,8 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 	// If requested IP pools are provided, use those unconditionally. We will ignore
 	// IP pool selectors in this case. We need this for backwards compatibility, since IP pool
 	// node selectors have not always existed.
+	// 如果提供了请求的IP池，请无条件使用它们。在这种情况下，我们将忽略IP池选择器。
+	// 由于IP池，节点选择器并不总是存在。我们需要这样做以实现向后兼容性
 	if len(requestedPools) > 0 {
 		log.Debugf("Using the requested IP pools")
 		matchingPools = requestedPools
@@ -259,8 +291,11 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 	// At this point, we've determined the set of enabled IP pools which are valid for use.
 	// We only want to use IP pools which actually match this node, so do a filter based on
 	// selector.
+	//至此，我们已经确定了有效使用的已启用IP池的集合。
+	//我们只想使用实际上与该节点匹配的IP池，因此将根据选择器过滤
 	for _, pool := range enabledPools {
 		var matches bool
+		//选择节点
 		matches, err = pool.SelectsNode(node)
 		if err != nil {
 			log.WithError(err).WithField("pool", pool).Error("failed to determine if node matches pool")
@@ -268,6 +303,7 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 		}
 		if !matches {
 			// Do not consider pool enabled if the nodeSelector doesn't match the node's labels.
+			// 如果nodeSelector与节点的标签不匹配，不需要考虑这个enable的池
 			log.Debugf("IP pool does not match this node: %s", pool.Name)
 			continue
 		}
@@ -278,8 +314,9 @@ func (c ipamClient) determinePools(requestedPoolNets []net.IPNet, version int, n
 	return
 }
 
-func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, attrs map[string]string, requestedPools []net.IPNet, version int, host string, maxNumBlocks int) ([]net.IPNet, error) {
+func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, attrs map[string]string, requestedPools []net.IPNet, version int, host string, maxNumBlocks int, excludeIPs []net.IPNet) ([]net.IPNet, error) {
 	// Retrieve node for given hostname to use for ip pool node selection
+	//检索给定主机名的节点以用于IP池节点选择
 	node, err := c.client.Get(ctx, model.ResourceKey{Kind: v3.KindNode, Name: host}, "")
 	if err != nil {
 		log.WithError(err).WithField("node", host).Error("failed to get node for host")
@@ -287,18 +324,22 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 	}
 
 	// Make sure the returned value is OK.
+	//确保返回值是正确的
 	v3n, ok := node.Value.(*v3.Node)
 	if !ok {
 		return nil, fmt.Errorf("Datastore returned malformed node object")
 	}
 
 	// Determine the correct set of IP pools to use for this request.
+	//确定IP池是正确的能够用于这个请求(如果pod和namespaces中指定了IPPool，且存在，且enable时pools为指定的;否则为所有与当前nodeName匹配的IPPool集合)
+	//返回的pools为可为该请求使用的IPPool并且存在且enable的池、allPools是enable的全部IPPool
 	pools, allPools, err := c.determinePools(requestedPools, version, *v3n)
 	if err != nil {
 		return nil, err
 	}
 
 	// If there are no pools, we cannot assign addresses.
+	//如果没有IP池，我们不能够分配地址
 	if len(pools) == 0 {
 		return nil, fmt.Errorf("no configured Calico pools for node %v", host)
 	}
@@ -306,19 +347,27 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 	// First, we try to assign addresses from one of the existing host-affine blocks.  We
 	// always do strict checking at this stage, so it doesn't matter whether
 	// globally we have strict_affinity or not.
+	//首先，我们尝试从现有的主机亲和块之一分配地址。 我们在此阶段始终进行严格检查，因此全局范围内，是否具有strict_affinity是没关系的
 	logCtx := log.WithFields(log.Fields{"host": host})
 	if handleID != nil {
 		logCtx = logCtx.WithField("handle", *handleID)
 	}
 	logCtx.Info("Looking up existing affinities for host")
+
+	// 优先分配 host-affine 的地址块
+	// 这一步会从 kubernetes 中读取blockaffinities资源对象
+	// 其中 affBlocks 是一个 list，即有可能一个 host 对应多个 block
+	//获取亲和块、可以释放的亲和块(不属于任何IPPool)
 	affBlocks, affBlocksToRelease, err := c.blockReaderWriter.getAffineBlocks(ctx, host, version, pools)
 	if err != nil {
 		return nil, err
 	}
 
 	// Release any emptied blocks still affine to this host but no longer part of an IP Pool which selects this node.
+	// 释放所有仍与该主机亲和块，但不再是选择此节点的IP池的一部分。
 	for _, block := range affBlocksToRelease {
 		// Determine the pool for each block.
+		//确定每个块的池。
 		pool, err := c.blockReaderWriter.getPoolForIP(net.IP{block.IP}, allPools)
 		if err != nil {
 			log.WithError(err).Warnf("Failed to get pool for IP")
@@ -330,6 +379,7 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 		}
 
 		// Determine if the pool selects the current node, refusing to release this particular block affinity if so.
+		// 确定池是否选择了当前节点，如果是，则拒绝释放此指定的亲和块
 		blockSelectsNode, err := pool.SelectsNode(*v3n)
 		if err != nil {
 			logCtx.WithError(err).WithField("pool", pool).Error("Failed to determine if node matches pool, skipping")
@@ -341,7 +391,9 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 		}
 
 		// Release the block affinity, requiring it to be empty.
+		// 释放块关联，要求它为空,失败后重试100次
 		for i := 0; i < datastoreRetries; i++ {
+			//尝试删除BlockAffinity和ipamblock资源对象
 			if err = c.blockReaderWriter.releaseBlockAffinity(ctx, host, block, true); err != nil {
 				if _, ok := err.(errBlockClaimConflict); ok {
 					// Not claimed by this host - ignore.
@@ -360,50 +412,67 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 	}
 
 	logCtx.Debugf("Found %d affine IPv%d blocks for host: %v", len(affBlocks), version, affBlocks)
+
+	//创建一个 ips list，将分配的 num 个 IP 放入这个 list 中
 	ips := []net.IPNet{}
 	newIPs := []net.IPNet{}
 
 	// Record how many blocks we own so we can check against the limit later.
+	// 记录我们拥有多少个区块，以便我们以后可以检查限制
 	numBlocksOwned := len(affBlocks)
 
+	/********************************************存在主机关联的现有块******************************************************/
 	for len(ips) < num {
+		//和该主机关联的block——affBlocks数量为0
 		if len(affBlocks) == 0 {
 			logCtx.Infof("Ran out of existing affine blocks for host")
 			break
 		}
+		// 依次取地址块 list 中的成员来分配 IP
 		cidr := affBlocks[0]
 		affBlocks = affBlocks[1:]
 
 		// Try to assign from this block - if we hit a CAS error, we'll try this block again.
 		// For any other error, we'll break out and try the next affine block.
+		// 尝试从该块分配-如果遇到CAS错误，我们将再次尝试该块。对于其他任何错误，我们将继续尝试下一个亲和块。
 		for i := 0; i < datastoreRetries; i++ {
 			// Get the affinity.
+			// 获取亲和性
 			logCtx.Infof("Trying affinity for %s", cidr)
+			//根据host和cidr查询BlockAffinity资源对象
 			aff, err := c.blockReaderWriter.queryAffinity(ctx, host, cidr, "")
 			if err != nil {
+				//发生错误,从下一个affinity block中分配
 				logCtx.WithError(err).Warnf("Error getting affinity")
 				break
 			}
 
 			// Get the block which is referenced by the affinity, creating it if necessary.
+			// 根据BlockAffinity，获取相关性引用的块——ipamblocks资源对象，并在必要时创建它
 			b, err := c.getBlockFromAffinity(ctx, aff)
 			if err != nil {
 				// Couldn't get a block for this affinity.
+				// 无法获取这个亲和的ipamblocks
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
+					//CAS错误,从再次尝试,最多100次
 					logCtx.WithError(err).Debug("CAS error getting affine block - retry")
 					continue
 				}
+				//发生错误,从下一个affinity block中分配
 				logCtx.WithError(err).Warn("Couldn't get block for affinity, try next one")
 				break
 			}
 
 			// Assign IPs from the block.
-			newIPs, err = c.assignFromExistingBlock(ctx, b, num, handleID, attrs, host, true)
+			// 根据ipamblocks资源对象，分配IP;参数attrs中包括pod的namespace和name; b为ipamblocks.....
+			newIPs, err = c.assignFromExistingBlock(ctx, b, num, handleID, attrs, host, true, excludeIPs)
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
+					//CAS错误,从再次尝试,最多100次
 					logCtx.WithError(err).Debug("CAS error assigning from affine block - retry")
 					continue
 				}
+				//发生错误,从下一个affinity block中分配
 				logCtx.WithError(err).Warn("Couldn't assign from affine block, try next one")
 				break
 			}
@@ -413,16 +482,24 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 		logCtx.Infof("Block '%s' provided addresses: %v", cidr.String(), newIPs)
 	}
 
+	/********************************************用完了与该主机关联的现有块**************************************/
+	// 获取 Calico IPAM 的配置
+	// Calico IPAM 有两个全局配置项目（二者之中只能也必须有一个为 true）：
+	// StrictAffinity: 严格的一个 host 对应一个地址块，如果地址块耗尽不再分配新的地址,默认为false
+	// AutoAllocateBlocks: 自动分配地址块，如果基于 host affine 的地址块耗尽，将分配新的地址块,默认为true
+	// 这部分配置可以通过kubernetes ipamconfig资源对象来配置
 	// If there are still addresses to allocate, then we've run out of
 	// existing blocks with affinity to this host.  Before we can assign new blocks or assign in
 	// non-affine blocks, we need to check that our IPAM configuration
 	// allows that.
+	//如果仍然有地址要分配，那么我们已经用完了与该主机关联的现有块。 在我们分配新块, 或在非亲和块中分配，我们需要检查IPAM配置是否允许
 	config, err := c.GetIPAMConfig(ctx)
 	if err != nil {
 		return ips, err
 	}
 	logCtx.Debugf("Allocate new blocks? Config: %+v", config)
 	if config.AutoAllocateBlocks == true {
+		// 如果还有需要分配的 IP
 		rem := num - len(ips)
 		retries := datastoreRetries
 		for rem > 0 && retries > 0 {
@@ -433,15 +510,22 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 			}
 
 			// Claim a new block.
+			// 申请新的块
 			logCtx.Infof("No more affine blocks, but need to allocate %d more addresses - allocate another block", rem)
 			retries = retries - 1
 
+			// 申请一块 host-affine 块
+			// 新的 host-affine 块是有随机化算法从全局可用 ippool 中生成
 			// First, try to find an unclaimed block.
+			// 首先，尝试查找无人认领的块
 			logCtx.Info("Looking for an unclaimed block")
+			//参数host为当前nodeName;pools为该请求使用的IPPool并且存在且enable的池;config为ipamconfig(StrictAffinity、AutoAllocateBlocks配置)
+			//randomBlockGenerator算法生成块，然后查询ipamblocks,根据结果如果不存在,则返回该随机生产的被使用的cidr
 			subnet, err := c.blockReaderWriter.findUnclaimedBlock(ctx, host, version, pools, *config)
 			if err != nil {
 				if _, ok := err.(noFreeBlocksError); ok {
 					// No free blocks.  Break.
+					// 没有剩余的块。 break
 					logCtx.Info("No free blocks available for allocation")
 					break
 				}
@@ -453,6 +537,7 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 
 			for i := 0; i < datastoreRetries; i++ {
 				// We found an unclaimed block - claim affinity for it.
+				// 我们发现了一个无人认领的块-声称对此有亲和力。
 				pa, err := c.blockReaderWriter.getPendingAffinity(ctx, host, *subnet)
 				if err != nil {
 					if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
@@ -464,6 +549,7 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 				}
 
 				// We have an affinity - try to get the block.
+				// 我们有亲和力 - 尝试获得块
 				b, err := c.getBlockFromAffinity(ctx, pa)
 				if err != nil {
 					if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
@@ -481,9 +567,11 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 				}
 
 				// Claim successful.  Assign addresses from the new block.
+				// 声明成功。 从新块分配地址
 				logCtx.Infof("Claimed new block %v - assigning %d addresses", b, rem)
 				numBlocksOwned++
-				newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, host, config.StrictAffinity)
+				// 在新的块里分配 IP
+				newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, host, config.StrictAffinity, excludeIPs)
 				if err != nil {
 					if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 						log.WithError(err).Debug("CAS Error assigning from new block - retry")
@@ -518,18 +606,37 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 	// If we need to support non-strict affinity and no auto-allocation of
 	// blocks, then we should query the actual allocation blocks and assign
 	// from those.
+	//如果仍然有地址要分配，我们现在尝试了对我们有一定的所有亲和块，并尝试（失败了）分配新的
+	// 那些。 如果我们不需要严格的主机关联性，那么最后一个选择是
+	//随机搜寻尚未尝试的任何块。
+	//
+	//注意，此处理仅占用所有IP池并中断
+	//将它们组合成块大小的CIDR，然后随机播放并搜索每个
+	// CIDR。 如果我们不允许自动分配以下内容，则此算法无效
+	//块，因为分配的块可能会稀疏地填充到
+	//池导致搜索空闲地址的速度非常慢。
+	//
+	//如果我们需要支持非严格的相似性并且不自动分配
+	//块，然后我们应该查询实际的分配块并进行分配
+	//从这些。
 	rem := num - len(ips)
+	//StrictAffinity为false且还需要分配IP
 	if config.StrictAffinity != true && rem != 0 {
 		logCtx.Infof("Attempting to assign %d more addresses from non-affine blocks", rem)
 
+		// 从符合要求的 IP 块中，遍历每个 pool
+		// 用当前宿主机 hostname 在这个 pool下用随机化算法为其生成一个新的 block
+		// 然后从新生成的 block 中分配 IP
 		// Iterate over pools and assign addresses until we either run out of pools,
 		// or the request has been satisfied.
+		// 遍历池并分配地址，直到我们耗尽池，或请求已满足
 		logCtx.Info("Looking for blocks with free IP addresses")
 		for _, p := range pools {
 			logCtx.Debugf("Assigning from non-affine blocks in pool %s", p.Spec.CIDR)
 			newBlock := randomBlockGenerator(p, host)
 			for rem > 0 {
 				// Grab a new random block.
+				// 抢一个新的随机块
 				blockCIDR := newBlock()
 				if blockCIDR == nil {
 					logCtx.Warningf("All addresses exhausted in pool %s", p.Spec.CIDR)
@@ -543,9 +650,12 @@ func (c ipamClient) autoAssign(ctx context.Context, num int, handleID *string, a
 						break
 					}
 
+					// 这某个 pool 的随机块中分配 IP
+					// 此时不管对应 block 是否被其他 host 使用，也不会将该 block 对当前 host 绑定
 					// Attempt to assign from the block.
+					// 尝试从块分配
 					logCtx.Infof("Attempting to assign IPs from non-affine block %s", blockCIDR.String())
-					newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, host, false)
+					newIPs, err := c.assignFromExistingBlock(ctx, b, rem, handleID, attrs, host, false, excludeIPs)
 					if err != nil {
 						if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 							logCtx.WithError(err).Debug("CAS error assigning from non-affine block - retry")
@@ -795,7 +905,8 @@ func (c ipamClient) releaseIPsFromBlock(ctx context.Context, ips []net.IP, block
 	return nil, errors.New("Max retries hit - excessive concurrent IPAM requests")
 }
 
-func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KVPair, num int, handleID *string, attrs map[string]string, host string, affCheck bool) ([]net.IPNet, error) {
+// 从已存在的ipamblocks块里分配 IP
+func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KVPair, num int, handleID *string, attrs map[string]string, host string, affCheck bool, excludeIPs []net.IPNet) ([]net.IPNet, error) {
 	blockCIDR := block.Key.(model.BlockKey).CIDR
 	logCtx := log.WithFields(log.Fields{"host": host, "block": blockCIDR})
 	if handleID != nil {
@@ -806,12 +917,14 @@ func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KV
 	// Pull out the block.
 	b := allocationBlock{block.Value.(*model.AllocationBlock)}
 
-	ips, err := b.autoAssign(num, handleID, host, attrs, affCheck)
+	// 从ipamblocks的spec.unallocated中分配
+	ips, err := b.autoAssign(num, handleID, host, attrs, affCheck, excludeIPs)
 	if err != nil {
 		logCtx.WithError(err).Errorf("Error in auto assign")
 		return nil, err
 	}
 	if len(ips) == 0 {
+		//没有可分配的IP
 		logCtx.Infof("Block is full")
 		return []net.IPNet{}, nil
 	}
@@ -819,13 +932,16 @@ func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KV
 	// Increment handle count.
 	if handleID != nil {
 		logCtx.Debug("Incrementing handle")
+		//创建ipamhandles资源对象
 		c.incrementHandle(ctx, *handleID, blockCIDR, num)
 	}
 
 	// Update the block using CAS by passing back the original
 	// KVPair.
+	// 通过传回原始KVPair使用CAS更新该块
 	logCtx.Info("Writing block in order to claim IPs")
 	block.Value = b.AllocationBlock
+	// 更新ipamblocks资源对象，包含spec.unallocated、attributes、allocations等
 	_, err = c.blockReaderWriter.updateBlock(ctx, block)
 	if err != nil {
 		logCtx.WithError(err).Infof("Failed to update block")
@@ -837,6 +953,7 @@ func (c ipamClient) assignFromExistingBlock(ctx context.Context, block *model.KV
 		}
 		return nil, err
 	}
+	//更新ipamblocks成功,返回分配的IP
 	logCtx.Infof("Successfully claimed IPs: %v", ips)
 	return ips, nil
 }
@@ -1164,6 +1281,17 @@ func (c ipamClient) IPsByHandle(ctx context.Context, handleID string) ([]net.IP,
 // using the provided handle.
 func (c ipamClient) ReleaseByHandle(ctx context.Context, handleID string) error {
 	log.Infof("Releasing all IPs with handle '%s'", handleID)
+	//查询IPAMHandle资源对象
+	/**
+	apiVersion: crd.projectcalico.org/v1
+	kind: IPAMHandle
+	metadata:
+	  name: k8s-pod-network.05ffb574acfff5d81bb2fdd4f9cbe8660fddde66e9f5d3f02c468fe20092b971
+	spec:
+	  block:
+	    192.168.254.192/26: 1
+	  handleID: k8s-pod-network.05ffb574acfff5d81bb2fdd4f9cbe8660fddde66e9f5d3f02c468fe20092b971
+	*/
 	obj, err := c.blockReaderWriter.queryHandle(ctx, handleID, "")
 	if err != nil {
 		return err
@@ -1172,6 +1300,7 @@ func (c ipamClient) ReleaseByHandle(ctx context.Context, handleID string) error 
 
 	for blockStr, _ := range handle.Block {
 		_, blockCIDR, _ := net.ParseCIDR(blockStr)
+		//根据ipamhandle中的blockCIDR,操作响应的ipamblocks
 		if err := c.releaseByHandle(ctx, handleID, *blockCIDR); err != nil {
 			return err
 		}
@@ -1183,6 +1312,7 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 	logCtx := log.WithFields(log.Fields{"handle": handleID, "cidr": blockCIDR})
 	for i := 0; i < datastoreRetries; i++ {
 		logCtx.Debug("Querying block so we can release IPs by handle")
+		//根据ipamhandle中blockCIDR查询ipamblocks资源对象
 		obj, err := c.blockReaderWriter.queryBlock(ctx, blockCIDR, "")
 		if err != nil {
 			if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
@@ -1197,10 +1327,12 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 
 		// Release the IP by handle.
 		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
+		//更新ipamblocks的Unallocated、Allocations、Attributes
 		num := block.releaseByHandle(handleID)
 		if num == 0 {
 			// Block has no addresses with this handle, so
 			// all addresses are already unallocated.
+			//块没有使用此handleID的地址，因此所有地址都尚未分配
 			logCtx.Debug("Block has no addresses with the given handle")
 			return nil
 		}
@@ -1208,6 +1340,7 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 
 		if block.empty() && block.Affinity == nil {
 			logCtx.Info("Deleting block because it is now empty and has no affinity")
+			//删除ipamblocks资源对象
 			err = c.blockReaderWriter.deleteBlock(ctx, obj)
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
@@ -1216,6 +1349,7 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 				}
 
 				// Return the error unless the resource does not exist.
+				// 除非资源不存在，否则返回错误
 				if _, ok := err.(cerrors.ErrorResourceDoesNotExist); !ok {
 					logCtx.Errorf("Error deleting block: %v", err)
 					return err
@@ -1226,26 +1360,32 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 			// Compare and swap the AllocationBlock using the original
 			// KVPair read from before.  No need to update the Value since we
 			// have been directly manipulating the value referenced by the KVPair.
+			//使用之前读取的原始KVPair比较并交换AllocationBlock。 无需更新值，因为我们已经直接操作了KVPair引用的值
 			logCtx.Debug("Updating block to release IPs")
+			// 将上面 block.releaseByHandle(handleID)方法内更新的ipamblocks的Unallocated、Allocations、Attributes持久化
 			_, err = c.blockReaderWriter.updateBlock(ctx, obj)
 			if err != nil {
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 					// Comparison failed - retry.
+					//重试100次
 					logCtx.Warningf("CAS error for block, retry #%d: %v", i, err)
 					continue
 				} else {
 					// Something else - return the error.
+					//其他错误直接返回
 					logCtx.Errorf("Error updating block '%s': %v", block.CIDR.String(), err)
 					return err
 				}
 			}
 			logCtx.Debug("Successfully released IPs from block")
 		}
+		//递减ipamhandles.spec.block这个map中入参：blockCIDR的值
 		if err = c.decrementHandle(ctx, handleID, blockCIDR, num); err != nil {
 			logCtx.WithError(err).Warn("Failed to decrement handle")
 		}
 
 		// Determine whether or not the block's pool still matches the node.
+		// 确定该块的池是否仍与该节点匹配
 		if err = c.ensureConsistentAffinity(ctx, block.AllocationBlock); err != nil {
 			logCtx.WithError(err).Warn("Error ensuring consistent affinity but IP already released. Returning no error.")
 		}
@@ -1258,6 +1398,7 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 	var obj *model.KVPair
 	var err error
 	for i := 0; i < datastoreRetries; i++ {
+		//查询ipamhandles资源对象
 		obj, err = c.blockReaderWriter.queryHandle(ctx, handleID, "")
 		if err != nil {
 			if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
@@ -1288,6 +1429,7 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 		// apply the changes.
 		if obj.Revision != "" {
 			// This is an existing handle - update it.
+			//更新ipamhandles资源对象
 			_, err = c.blockReaderWriter.updateHandle(ctx, obj)
 			if err != nil {
 				log.WithError(err).Warning("Failed to update handle, retry")
@@ -1295,6 +1437,7 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 			}
 		} else {
 			// This is a new handle - create it.
+			//创建ipamhandles资源对象
 			_, err = c.client.Create(ctx, obj)
 			if err != nil {
 				log.WithError(err).Warning("Failed to create handle, retry")
@@ -1307,14 +1450,17 @@ func (c ipamClient) incrementHandle(ctx context.Context, handleID string, blockC
 
 }
 
+//递减ipamhandles.spec.block这个map中入参：blockCIDR的值
 func (c ipamClient) decrementHandle(ctx context.Context, handleID string, blockCIDR net.IPNet, num int) error {
 	for i := 0; i < datastoreRetries; i++ {
+		//查询ipamhandle资源对象
 		obj, err := c.blockReaderWriter.queryHandle(ctx, handleID, "")
 		if err != nil {
 			return err
 		}
 		handle := allocationHandle{obj.Value.(*model.IPAMHandle)}
 
+		//递减ipamhandles.spec.block这个map中入参：blockCIDR的值
 		_, err = handle.decrementBlock(blockCIDR, num)
 		if err != nil {
 			return err
@@ -1322,12 +1468,15 @@ func (c ipamClient) decrementHandle(ctx context.Context, handleID string, blockC
 
 		// Update / Delete as appropriate.  Since we have been manipulating the
 		// data in the KVPair, just pass this straight back to the client.
+		// 根据需要更新/删除。 由于我们一直在KVPair中处理数据，因此只需将其直接传递回客户端即可
 		if handle.empty() {
 			log.Debugf("Deleting handle: %s", handleID)
+			//删除ipamhandles资源对象
 			if err = c.blockReaderWriter.deleteHandle(ctx, obj); err != nil {
 				if err != nil {
 					if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 						// Update conflict - retry.
+						//重试
 						continue
 					} else if _, ok := err.(cerrors.ErrorResourceDoesNotExist); !ok {
 						return err
@@ -1337,6 +1486,7 @@ func (c ipamClient) decrementHandle(ctx context.Context, handleID string, blockC
 			}
 		} else {
 			log.Debugf("Updating handle: %s", handleID)
+			//更新ipamhandles资源对象
 			if _, err = c.blockReaderWriter.updateHandle(ctx, obj); err != nil {
 				if _, ok := err.(cerrors.ErrorResourceUpdateConflict); ok {
 					// Update conflict - retry.

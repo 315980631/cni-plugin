@@ -61,7 +61,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 
 	// Allocate the IP and update/create the endpoint. Do this even if the endpoint already exists and has an IP
 	// allocation. The kubelet will send a DEL call for any old containers and we'll clean up the old IPs then.
-	client, err := newK8sClient(conf, logger)
+	client, err := NewK8sClient(conf, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -189,10 +189,12 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 			var v4pools, v6pools string
 
 			// Sets  the Namespace annotation for IP pools as default
+			//优先使用namespace中的annotation中的ippool
 			v4pools = annotNS["cni.projectcalico.org/ipv4pools"]
 			v6pools = annotNS["cni.projectcalico.org/ipv6pools"]
 
 			// Gets the POD annotation for IP Pools and overwrites Namespace annotation if it exists
+			//pod中有annotation则使用pod中指定的ippool
 			v4poolpod := annot["cni.projectcalico.org/ipv4pools"]
 			if len(v4poolpod) != 0 {
 				v4pools = v4poolpod
@@ -202,11 +204,13 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 				v6pools = v6poolpod
 			}
 
+			//校验annotations中的ippool,以及将ippool中指定ipv4pool和ipv6pool追加到args.StdinData["ipam"] 中,即netConf.IPAM.IPv4Pool中,ipam会从其中获取IP
 			if len(v4pools) != 0 || len(v6pools) != 0 {
 				var stdinData map[string]interface{}
 				if err := json.Unmarshal(args.StdinData, &stdinData); err != nil {
 					return nil, err
 				}
+				//如["default-ipv4-ippool", "test1-ipv4-ippool"]
 				var v4PoolSlice, v6PoolSlice []string
 
 				if len(v4pools) > 0 {
@@ -219,6 +223,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 						logger.Fatal("Error asserting stdinData type")
 						os.Exit(0)
 					}
+					//将ippool中指定的ipv4pool追加到args.StdinData["ipam"] 中,即netConf.IPAM.IPv4Pool中,ipam会从其中获取IP
 					stdinData["ipam"].(map[string]interface{})["ipv4_pools"] = v4PoolSlice
 					logger.WithField("ipv4_pools", v4pools).Debug("Setting IPv4 Pools")
 				}
@@ -232,6 +237,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 						logger.Fatal("Error asserting stdinData type")
 						os.Exit(0)
 					}
+					//将ippool中指定的ipv6pool追加到args.StdinData["ipam"] 中,即netConf.IPAM.IPv6Pool中,ipam会从其中获取IP
 					stdinData["ipam"].(map[string]interface{})["ipv6_pools"] = v6PoolSlice
 					logger.WithField("ipv6_pools", v6pools).Debug("Setting IPv6 Pools")
 				}
@@ -366,6 +372,9 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 
 	// Whether the endpoint existed or not, the veth needs (re)creating.
 	hostVethName := k8sconversion.VethNameForWorkload(epIDs.Namespace, epIDs.Pod)
+	//step4：创建veth pair，一端设置到容器中，并配置申请到的IP地址
+	//step5，在主机节点设置容器IP的路由规则
+	//step6，如果开启了ipMasq特性，设置SNAT规则
 	_, contVethMac, err := utils.DoNetworking(args, conf, result, logger, hostVethName, routes)
 	if err != nil {
 		logger.WithError(err).Error("Error setting up networking")
@@ -723,7 +732,7 @@ func parseIPAddrs(ipAddrsStr string, logger *logrus.Entry) ([]string, error) {
 	return ips, nil
 }
 
-func newK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clientset, error) {
+func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clientset, error) {
 	// Some config can be passed in a kubeconfig file
 	kubeconfig := conf.Kubernetes.Kubeconfig
 

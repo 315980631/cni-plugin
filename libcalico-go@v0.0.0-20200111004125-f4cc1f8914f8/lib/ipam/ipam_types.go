@@ -69,7 +69,11 @@ type AutoAssignArgs struct {
 
 	// If non-zero, limit on the number of affine blocks this host is allowed to claim
 	// (per IP version).
+	//如果不为零，则限制此主机可以声明的亲和块数（每个IP版本）。
 	MaxBlocksPerHost int
+
+	// Exclude IPs, use in fixed ip
+	ExcludeIPs []cnet.IPNet
 }
 
 // IPAMConfig contains global configuration options for Calico IPAM.

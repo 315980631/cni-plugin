@@ -51,6 +51,7 @@ type Interface interface {
 	// ReleaseByHandle releases all IP addresses that have been assigned
 	// using the provided handle.  Returns an error if no addresses
 	// are assigned with the given handle.
+	// ReleaseByHandle释放使用提供的句柄handleID分配的所有IP地址。如果未使用给定的句柄handleID分配地址，则返回错误
 	ReleaseByHandle(ctx context.Context, handleID string) error
 
 	// ClaimAffinity claims affinity to the given host for all blocks

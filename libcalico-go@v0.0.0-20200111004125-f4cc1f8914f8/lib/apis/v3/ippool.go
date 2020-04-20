@@ -75,17 +75,22 @@ type IPPoolSpec struct {
 
 // SelectsNode determines whether or not the IPPool's nodeSelector
 // matches the labels on the given node.
+// SelectsNode确定IPPool的nodeSelector匹配给定节点上的标签
 func (pool IPPool) SelectsNode(n Node) (bool, error) {
 	// No node selector means that the pool matches the node.
+	// 没有节点选择器意味着该池与该节点匹配
 	if len(pool.Spec.NodeSelector) == 0 {
 		return true, nil
 	}
 	// Check for valid selector syntax.
+	// 检查有效的选择器语法
 	sel, err := selector.Parse(pool.Spec.NodeSelector)
 	if err != nil {
+		//ippool中的nodeSelector语法不对,就当做不匹配
 		return false, err
 	}
 	// Return whether or not the selector matches.
+	// 返回选择器是否匹配
 	return sel.Evaluate(n.Labels), nil
 }
 

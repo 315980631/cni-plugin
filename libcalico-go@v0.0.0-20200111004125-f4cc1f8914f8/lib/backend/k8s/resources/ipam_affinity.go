@@ -251,6 +251,7 @@ func (c *blockAffinityClient) List(ctx context.Context, list model.ListInterface
 			cidr2 := &cidr
 			if requestedIPVersion == 0 || requestedIPVersion == cidr2.Version() {
 				// Matches the given host and IP version.
+				// 匹配给定的主机和IP版本
 				kvpl.KVPairs = append(kvpl.KVPairs, v1kvp)
 			}
 		}

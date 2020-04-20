@@ -107,6 +107,8 @@ type AllocationBlock struct {
 	// HostAffinity is deprecated in favor of Affinity.
 	// This is only to keep compatibility with existing deployments.
 	// The data format should be `Affinity: host:hostname` (not `hostAffinity: hostname`).
+	//不推荐使用HostAffinity，而推荐使用Affinity。这只是为了保持与现有部署的兼容性。
+	//数据格式应为`Affinity：host：hostname`（而不是`hostAffinity：hostname`）
 	HostAffinity *string `json:"hostAffinity,omitempty"`
 }
 

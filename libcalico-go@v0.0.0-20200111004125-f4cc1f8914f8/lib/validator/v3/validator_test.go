@@ -1270,13 +1270,13 @@ func init() {
 			}, true),
 		Entry("should accept Rule with valid annotations",
 			api.Rule{
-				Action: "Allow",
-				Metadata: &api.RuleMetadata{Annotations:map[string]string{"foo": "bar"}},
+				Action:   "Allow",
+				Metadata: &api.RuleMetadata{Annotations: map[string]string{"foo": "bar"}},
 			}, true),
 		Entry("should reject Rule with invalid annotations",
 			api.Rule{
-				Action: "Allow",
-				Metadata: &api.RuleMetadata{Annotations:map[string]string{"...": "bar"}},
+				Action:   "Allow",
+				Metadata: &api.RuleMetadata{Annotations: map[string]string{"...": "bar"}},
 			}, false),
 
 		// (API) BGPPeerSpec
