@@ -25,13 +25,15 @@ type ServiceIPPool struct {
 	metav1.TypeMeta `json:",inline"`
 	// Standard object's metadata.
 	metav1.ObjectMeta `json:"metadata,omitempty"`
-	// Specification of the IPAMBlock.
+	// Specification of the ServiceIPPool.
 	Spec ServiceIPPoolSpec `json:"spec,omitempty"`
 }
 
 // ServiceIPPoolSpec contains the enabled and disabled ippools
 type ServiceIPPoolSpec struct {
-	IPPoolList         []string `json:"ippoolList"`
+	//enabled ippool
+	IPPoolList []string `json:"ippoolList"`
+	//disabled ippool
 	DisabledIPPoolList []string `json:"disabledIPPoolList"`
 }
 

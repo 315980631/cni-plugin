@@ -281,10 +281,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 			for podIPVesion, fixedIP := range item.Data {
 				//被固定IP占用的ipv4和ipv6地址
 				ip := net.ParseIP(fixedIP)
-				if strings.HasSuffix(podIPVesion, "ipv4") && ip != nil && ip.To4() != nil {
+				if strings.HasSuffix(podIPVesion, k8s.IPV4Suffix) && ip != nil && ip.To4() != nil {
 					//排除ipv4
 					excludeIPs = append(excludeIPs, cnet.IPNet{IPNet: net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)}})
-				} else if strings.HasSuffix(podIPVesion, "ipv6") && ip != nil && ip.To4() == nil {
+				} else if strings.HasSuffix(podIPVesion, k8s.IPV6Suffix) && ip != nil && ip.To4() == nil {
 					//排除ipv6
 					excludeIPs = append(excludeIPs, cnet.IPNet{IPNet: net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}})
 				} else {
@@ -304,8 +304,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 				//存在cm
 				logger.Infof("configMap is %v", thisFixedCm)
 				var ips []net.IPNet
-				ipv4Addr := net.IPNet{IP: net.ParseIP(thisFixedCm.Data[epIDs.Pod+"-ipv4"]), Mask: net.CIDRMask(32, 32)}
-				ipv6Addr := net.IPNet{IP: net.ParseIP(thisFixedCm.Data[epIDs.Pod+"-ipv6"]), Mask: net.CIDRMask(128, 128)}
+				ipv4Addr := net.IPNet{IP: net.ParseIP(thisFixedCm.Data[epIDs.Pod+k8s.IPV4Suffix]), Mask: net.CIDRMask(32, 32)}
+				ipv6Addr := net.IPNet{IP: net.ParseIP(thisFixedCm.Data[epIDs.Pod+k8s.IPV6Suffix]), Mask: net.CIDRMask(128, 128)}
 				ips = append(ips, ipv4Addr, ipv6Addr)
 
 				if ipv4Addr.IP != nil || ipv6Addr.IP != nil {
@@ -401,12 +401,12 @@ func cmdAdd(args *skel.CmdArgs) error {
 				logger.Infof("old configMap is %v", configMap)
 				if configMap.Data == nil {
 					data := make(map[string]string)
-					data[epIDs.Pod+"-ipv4"] = ipv4
-					data[epIDs.Pod+"-ipv6"] = ipv6
+					data[epIDs.Pod+k8s.IPV4Suffix] = ipv4
+					data[epIDs.Pod+k8s.IPV6Suffix] = ipv6
 					configMap.Data = data
 				} else {
-					configMap.Data[epIDs.Pod+"-ipv4"] = ipv4
-					configMap.Data[epIDs.Pod+"-ipv6"] = ipv6
+					configMap.Data[epIDs.Pod+k8s.IPV4Suffix] = ipv4
+					configMap.Data[epIDs.Pod+k8s.IPV6Suffix] = ipv6
 				}
 				logger.Infof("start to update configMap to %v", configMap)
 				_, err = clientset.CoreV1().ConfigMaps(epIDs.Namespace).Update(configMap)

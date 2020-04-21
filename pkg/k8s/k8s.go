@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	labelutil "k8s.io/apimachinery/pkg/labels"
 	"net"
 	"os"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/plugins/pkg/ipam"
 	"github.com/projectcalico/cni-plugin/internal/pkg/utils"
+	svcClient "github.com/projectcalico/cni-plugin/pkg/k8s/generated/clientset/versioned"
 	"github.com/projectcalico/cni-plugin/pkg/types"
 	api "github.com/projectcalico/libcalico-go/lib/apis/v3"
 	k8sconversion "github.com/projectcalico/libcalico-go/lib/backend/k8s/conversion"
@@ -38,7 +40,13 @@ import (
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+)
+
+const (
+	IPV4Suffix = "-ipv4"
+	IPV6Suffix = "-ipv6"
 )
 
 // CmdAddK8s performs the "ADD" operation on a kubernetes pod
@@ -161,7 +169,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 
 	var ports []api.EndpointPort
 	var profiles []string
-	var generateName string
+	//var generateName string
 
 	// Only attempt to fetch the labels and annotations from Kubernetes
 	// if the policy type has been set to "k8s". This allows users to
@@ -174,7 +182,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		}
 		logger.WithField("NS Annotations", annotNS).Debug("Fetched K8s namespace annotations")
 
-		labels, annot, ports, profiles, generateName, err = getK8sPodInfo(client, epIDs.Pod, epIDs.Namespace)
+		labels, annot, podLabels, ports, profiles, _, err := getK8sPodInfo(client, epIDs.Pod, epIDs.Namespace)
 		if err != nil {
 			return nil, err
 		}
@@ -193,19 +201,58 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 			v4pools = annotNS["cni.projectcalico.org/ipv4pools"]
 			v6pools = annotNS["cni.projectcalico.org/ipv6pools"]
 
+			//获取pod中的anno:serviceIPPoolcrd
+			serviceIPv4Pool := annot["serviceIPv4Poolcrd"]
+			serviceIPv6Pool := annot["serviceIPv6Poolcrd"]
+			var svcV4Pools, svcV6Pools []string
+			if serviceIPv4Pool != "" || serviceIPv6Pool != "" {
+				svcPoolClient, err := newSvcPoolClient(conf, logger)
+				if err != nil {
+					return nil, err
+				}
+				//通过label查该pod对应的所有servicepool,一次性查询IPv4和ipv6的svcPool
+				//label和pod的app=deployName
+				svcPoolLabel := map[string]string{"app": podLabels["app"]}
+				svcPools, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).List(context.TODO(), metav1.ListOptions{
+					LabelSelector: labelutil.SelectorFromSet(svcPoolLabel).String(),
+				})
+				if err != nil {
+					return nil, err
+				}
+				if len(svcPools.Items) == 0 {
+					return nil, fmt.Errorf("service ip pool not exist")
+				}
+
+				for _, pool := range svcPools.Items {
+					if strings.HasSuffix(pool.Name, IPV4Suffix) {
+						svcV4Pools = pool.Spec.IPPoolList
+					} else if strings.HasSuffix(pool.Name, IPV6Suffix) {
+						svcV6Pools = pool.Spec.IPPoolList
+					} else {
+						return nil, fmt.Errorf("error service ip pool: %v/%v", pool.Namespace, pool.Name)
+					}
+				}
+			}
+
 			// Gets the POD annotation for IP Pools and overwrites Namespace annotation if it exists
 			//pod中有annotation则使用pod中指定的ippool
-			v4poolpod := annot["cni.projectcalico.org/ipv4pools"]
-			if len(v4poolpod) != 0 {
-				v4pools = v4poolpod
+			if len(svcV4Pools) == 0 {
+				//pod中没有指定anno：serviceIPv4Poolcrd
+				v4poolpod := annot["cni.projectcalico.org/ipv4pools"]
+				if len(v4poolpod) != 0 {
+					v4pools = v4poolpod
+				}
 			}
-			v6poolpod := annot["cni.projectcalico.org/ipv6pools"]
-			if len(v6poolpod) != 0 {
-				v6pools = v6poolpod
+			if len(svcV6Pools) == 0 {
+				//pod中没有指定anno：serviceIPv6Poolcrd
+				v6poolpod := annot["cni.projectcalico.org/ipv6pools"]
+				if len(v6poolpod) != 0 {
+					v6pools = v6poolpod
+				}
 			}
 
 			//校验annotations中的ippool,以及将ippool中指定ipv4pool和ipv6pool追加到args.StdinData["ipam"] 中,即netConf.IPAM.IPv4Pool中,ipam会从其中获取IP
-			if len(v4pools) != 0 || len(v6pools) != 0 {
+			if len(v4pools) != 0 || len(v6pools) != 0 || len(svcV4Pools) != 0 || len(svcV6Pools) != 0 {
 				var stdinData map[string]interface{}
 				if err := json.Unmarshal(args.StdinData, &stdinData); err != nil {
 					return nil, err
@@ -213,10 +260,15 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 				//如["default-ipv4-ippool", "test1-ipv4-ippool"]
 				var v4PoolSlice, v6PoolSlice []string
 
-				if len(v4pools) > 0 {
-					if err := json.Unmarshal([]byte(v4pools), &v4PoolSlice); err != nil {
-						logger.WithField("IPv4Pool", v4pools).Error("Error parsing IPv4 IPPools")
-						return nil, err
+				if len(v4pools) > 0 || len(svcV4Pools) > 0 {
+					if len(svcV4Pools) == 0 {
+						if err := json.Unmarshal([]byte(v4pools), &v4PoolSlice); err != nil {
+							logger.WithField("IPv4Pool", v4pools).Error("Error parsing IPv4 IPPools")
+							return nil, err
+						}
+					} else {
+						logger.Infof("use service ipv4 pool: %v", svcV4Pools)
+						v4PoolSlice = svcV4Pools
 					}
 
 					if _, ok := stdinData["ipam"].(map[string]interface{}); !ok {
@@ -227,10 +279,15 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 					stdinData["ipam"].(map[string]interface{})["ipv4_pools"] = v4PoolSlice
 					logger.WithField("ipv4_pools", v4pools).Debug("Setting IPv4 Pools")
 				}
-				if len(v6pools) > 0 {
-					if err := json.Unmarshal([]byte(v6pools), &v6PoolSlice); err != nil {
-						logger.WithField("IPv6Pool", v6pools).Error("Error parsing IPv6 IPPools")
-						return nil, err
+				if len(v6pools) > 0 || len(svcV6Pools) > 0 {
+					if len(svcV6Pools) == 0 {
+						if err := json.Unmarshal([]byte(v6pools), &v6PoolSlice); err != nil {
+							logger.WithField("IPv6Pool", v6pools).Error("Error parsing IPv6 IPPools")
+							return nil, err
+						}
+					} else {
+						logger.Infof("use service ipv6 pool: %v", svcV6Pools)
+						v6PoolSlice = svcV6Pools
 					}
 
 					if _, ok := stdinData["ipam"].(map[string]interface{}); !ok {
@@ -733,6 +790,25 @@ func parseIPAddrs(ipAddrsStr string, logger *logrus.Entry) ([]string, error) {
 }
 
 func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clientset, error) {
+	config, err := newK8sConfig(conf, logger)
+	if err != nil {
+		return nil, err
+	}
+	// Create the kube clientset
+	return kubernetes.NewForConfig(config)
+}
+
+func newSvcPoolClient(conf types.NetConf, logger *logrus.Entry) (*svcClient.Clientset, error) {
+	config, err := newK8sConfig(conf, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the svcpool client
+	return svcClient.NewForConfig(config)
+}
+
+func newK8sConfig(conf types.NetConf, logger *logrus.Entry) (*restclient.Config, error) {
 	// Some config can be passed in a kubeconfig file
 	kubeconfig := conf.Kubernetes.Kubeconfig
 
@@ -775,8 +851,7 @@ func NewK8sClient(conf types.NetConf, logger *logrus.Entry) (*kubernetes.Clients
 		return nil, err
 	}
 
-	// Create the clientset
-	return kubernetes.NewForConfig(config)
+	return config, nil
 }
 
 func getK8sNSInfo(client *kubernetes.Clientset, podNamespace string) (annotations map[string]string, err error) {
@@ -788,17 +863,17 @@ func getK8sNSInfo(client *kubernetes.Clientset, podNamespace string) (annotation
 	return ns.Annotations, nil
 }
 
-func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (labels map[string]string, annotations map[string]string, ports []api.EndpointPort, profiles []string, generateName string, err error) {
+func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (labels map[string]string, annotations map[string]string, podLabels map[string]string, ports []api.EndpointPort, profiles []string, generateName string, err error) {
 	pod, err := client.CoreV1().Pods(string(podNamespace)).Get(podName, metav1.GetOptions{})
 	logrus.Infof("pod info %+v", pod)
 	if err != nil {
-		return nil, nil, nil, nil, "", err
+		return nil, nil, nil, nil, nil, "", err
 	}
 
 	var c k8sconversion.Converter
 	kvp, err := c.PodToWorkloadEndpoint(pod)
 	if err != nil {
-		return nil, nil, nil, nil, "", err
+		return nil, nil, nil, nil, nil, "", err
 	}
 
 	ports = kvp.Value.(*api.WorkloadEndpoint).Spec.Ports
@@ -806,7 +881,7 @@ func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (
 	profiles = kvp.Value.(*api.WorkloadEndpoint).Spec.Profiles
 	generateName = kvp.Value.(*api.WorkloadEndpoint).GenerateName
 
-	return labels, pod.Annotations, ports, profiles, generateName, nil
+	return labels, pod.Annotations, pod.Labels, ports, profiles, generateName, nil
 }
 
 func getPodCidr(client *kubernetes.Clientset, conf types.NetConf, nodename string) (string, error) {
