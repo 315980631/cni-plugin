@@ -1,0 +1,56 @@
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: serviceippools.harmonycloud.cn
+spec:
+  group: harmonycloud.cn
+  version: v1alpha1
+  names:
+    kind: ServiceIPPool
+    listKind: ServiceIPPoolList
+    plural: serviceippools
+    singular: serviceippool
+    shortNames:
+      - svcpool
+    categories:
+      - all
+  scope: Namespaced
+  additionalPrinterColumns:
+    - name: ENABLEIPPOOL
+      type: string
+      description: 'enable service ip pools'
+      JSONPath: .spec.ippoolList
+    - name: DISABLEIPPOOL
+      type: string
+      description: 'disable service ip pools'
+      JSONPath: .spec.disabledIPPoolList
+  validation:
+    openAPIV3Schema:
+      properties:
+        metadata:
+          type: object
+          required:
+          - name
+          - labels
+          properties:
+            name:
+              type: string
+              pattern: '(-ipv4|-ipv6)$'
+            labels:
+              type: object
+              required:
+              - app
+              properties:
+                app:
+                  type: string
+        spec:
+          type: object
+          properties:
+            ippoolList:
+              items:
+                type: string
+              type: array
+            disabledIPPoolList:
+              items:
+                type: string
+              type: array

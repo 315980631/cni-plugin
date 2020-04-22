@@ -1,0 +1,14 @@
+apiVersion: harmonycloud.cn/v1alpha1
+kind: ServiceIPPool
+metadata:
+  name: svc1-ipv6
+  namespace: kube-system
+  labels:
+    app: svc1
+spec:
+  ippoolList:
+    - pool1
+    - pool2
+  disabledIPPoolList:
+    - pool3
+    - pool4

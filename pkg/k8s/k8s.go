@@ -211,7 +211,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 					return nil, err
 				}
 				//通过label查该pod对应的所有servicepool,一次性查询IPv4和ipv6的svcPool
-				//label和pod的app=deployName
+				//请保证创建的serviceippool中包含label: app=deployName;且名称为deployName-ipv4、deployName-ipv6
 				svcPoolLabel := map[string]string{"app": podLabels["app"]}
 				svcPools, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).List(context.TODO(), metav1.ListOptions{
 					LabelSelector: labelutil.SelectorFromSet(svcPoolLabel).String(),
