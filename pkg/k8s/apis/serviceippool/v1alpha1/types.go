@@ -31,10 +31,14 @@ type ServiceIPPool struct {
 
 // ServiceIPPoolSpec contains the enabled and disabled ippools
 type ServiceIPPoolSpec struct {
-	//enabled ippool
-	IPPoolList []string `json:"ippoolList"`
-	//disabled ippool
-	DisabledIPPoolList []string `json:"disabledIPPoolList"`
+	//enabled ipv4 ippool
+	IPv4PoolList []string `json:"ipv4poolList"`
+	//disabled ipv4 ippool
+	DisabledIPv4PoolList []string `json:"disabledIPv4PoolList"`
+	//enabled ipv6 ippool
+	IPv6PoolList []string `json:"ipv6poolList"`
+	//disabled ipv6 ippool
+	DisabledIPv6PoolList []string `json:"disabledIPv6PoolList"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

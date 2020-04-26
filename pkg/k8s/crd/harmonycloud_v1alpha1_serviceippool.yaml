@@ -15,42 +15,25 @@ spec:
     categories:
       - all
   scope: Namespaced
-  additionalPrinterColumns:
-    - name: ENABLEIPPOOL
-      type: string
-      description: 'enable service ip pools'
-      JSONPath: .spec.ippoolList
-    - name: DISABLEIPPOOL
-      type: string
-      description: 'disable service ip pools'
-      JSONPath: .spec.disabledIPPoolList
   validation:
     openAPIV3Schema:
       properties:
-        metadata:
-          type: object
-          required:
-          - name
-          - labels
-          properties:
-            name:
-              type: string
-              pattern: '(-ipv4|-ipv6)$'
-            labels:
-              type: object
-              required:
-              - app
-              properties:
-                app:
-                  type: string
         spec:
           type: object
           properties:
-            ippoolList:
+            ipv4poolList:
               items:
                 type: string
               type: array
-            disabledIPPoolList:
+            disabledIPv4PoolList:
+              items:
+                type: string
+              type: array
+            ipv6poolList:
+              items:
+                type: string
+              type: array
+            disabledIPv6PoolList:
               items:
                 type: string
               type: array

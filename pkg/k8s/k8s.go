@@ -202,35 +202,26 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 			v6pools = annotNS["cni.projectcalico.org/ipv6pools"]
 
 			//获取pod中的anno:serviceIPPoolcrd
-			serviceIPv4Pool := annot["serviceIPv4Poolcrd"]
-			serviceIPv6Pool := annot["serviceIPv6Poolcrd"]
+			serviceIPv4Pool := annot["serviceIPPoolcrd"]
 			var svcV4Pools, svcV6Pools []string
-			if serviceIPv4Pool != "" || serviceIPv6Pool != "" {
+			if serviceIPv4Pool != "" {
 				svcPoolClient, err := newSvcPoolClient(conf, logger)
 				if err != nil {
 					return nil, err
 				}
-				//通过label查该pod对应的所有servicepool,一次性查询IPv4和ipv6的svcPool
-				//请保证创建的serviceippool中包含label: app=deployName;且名称为deployName-ipv4、deployName-ipv6
-				svcPoolLabel := map[string]string{"app": podLabels["app"]}
-				svcPools, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).List(context.TODO(), metav1.ListOptions{
-					LabelSelector: labelutil.SelectorFromSet(svcPoolLabel).String(),
-				})
+				//通过label查该pod对应的所有servicepool,包含IPv4和ipv6的IPPool信息
+				svcPool, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).Get(context.TODO(), serviceIPv4Pool, metav1.GetOptions{})
 				if err != nil {
 					return nil, err
 				}
-				if len(svcPools.Items) == 0 {
+				if svcPool == nil {
 					return nil, fmt.Errorf("service ip pool not exist")
 				}
 
-				for _, pool := range svcPools.Items {
-					if strings.HasSuffix(pool.Name, IPV4Suffix) {
-						svcV4Pools = pool.Spec.IPPoolList
-					} else if strings.HasSuffix(pool.Name, IPV6Suffix) {
-						svcV6Pools = pool.Spec.IPPoolList
-					} else {
-						return nil, fmt.Errorf("error service ip pool: %v/%v", pool.Namespace, pool.Name)
-					}
+				if len(svcPool.Spec.IPv4PoolList) != 0 {
+					svcV4Pools = svcPool.Spec.IPv4PoolList
+				} else if len(svcPool.Spec.IPv4PoolList) != 0 {
+					svcV6Pools = svcPool.Spec.IPv6PoolList
 				}
 			}
 
