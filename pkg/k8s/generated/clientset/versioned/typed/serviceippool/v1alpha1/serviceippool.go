@@ -19,7 +19,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"context"
 	"time"
 
 	v1alpha1 "github.com/projectcalico/cni-plugin/pkg/k8s/apis/serviceippool/v1alpha1"
@@ -38,14 +37,14 @@ type ServiceIPPoolsGetter interface {
 
 // ServiceIPPoolInterface has methods to work with ServiceIPPool resources.
 type ServiceIPPoolInterface interface {
-	Create(ctx context.Context, serviceIPPool *v1alpha1.ServiceIPPool, opts v1.CreateOptions) (*v1alpha1.ServiceIPPool, error)
-	Update(ctx context.Context, serviceIPPool *v1alpha1.ServiceIPPool, opts v1.UpdateOptions) (*v1alpha1.ServiceIPPool, error)
-	Delete(ctx context.Context, name string, opts v1.DeleteOptions) error
-	DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error
-	Get(ctx context.Context, name string, opts v1.GetOptions) (*v1alpha1.ServiceIPPool, error)
-	List(ctx context.Context, opts v1.ListOptions) (*v1alpha1.ServiceIPPoolList, error)
-	Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error)
-	Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ServiceIPPool, err error)
+	Create(serviceIPPool *v1alpha1.ServiceIPPool, opts v1.CreateOptions) (*v1alpha1.ServiceIPPool, error)
+	Update(serviceIPPool *v1alpha1.ServiceIPPool, opts v1.UpdateOptions) (*v1alpha1.ServiceIPPool, error)
+	Delete(name string, opts v1.DeleteOptions) error
+	DeleteCollection(opts v1.DeleteOptions, listOpts v1.ListOptions) error
+	Get(name string, opts v1.GetOptions) (*v1alpha1.ServiceIPPool, error)
+	List(opts v1.ListOptions) (*v1alpha1.ServiceIPPoolList, error)
+	Watch(opts v1.ListOptions) (watch.Interface, error)
+	Patch(name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ServiceIPPool, err error)
 	ServiceIPPoolExpansion
 }
 
@@ -64,20 +63,20 @@ func newServiceIPPools(c *ServiceippoolV1alpha1Client, namespace string) *servic
 }
 
 // Get takes name of the serviceIPPool, and returns the corresponding serviceIPPool object, and an error if there is any.
-func (c *serviceIPPools) Get(ctx context.Context, name string, options v1.GetOptions) (result *v1alpha1.ServiceIPPool, err error) {
+func (c *serviceIPPools) Get(name string, options v1.GetOptions) (result *v1alpha1.ServiceIPPool, err error) {
 	result = &v1alpha1.ServiceIPPool{}
 	err = c.client.Get().
 		Namespace(c.ns).
 		Resource("serviceippools").
 		Name(name).
 		VersionedParams(&options, scheme.ParameterCodec).
-		Do(ctx).
+		Do().
 		Into(result)
 	return
 }
 
 // List takes label and field selectors, and returns the list of ServiceIPPools that match those selectors.
-func (c *serviceIPPools) List(ctx context.Context, opts v1.ListOptions) (result *v1alpha1.ServiceIPPoolList, err error) {
+func (c *serviceIPPools) List(opts v1.ListOptions) (result *v1alpha1.ServiceIPPoolList, err error) {
 	var timeout time.Duration
 	if opts.TimeoutSeconds != nil {
 		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
@@ -88,13 +87,13 @@ func (c *serviceIPPools) List(ctx context.Context, opts v1.ListOptions) (result 
 		Resource("serviceippools").
 		VersionedParams(&opts, scheme.ParameterCodec).
 		Timeout(timeout).
-		Do(ctx).
+		Do().
 		Into(result)
 	return
 }
 
 // Watch returns a watch.Interface that watches the requested serviceIPPools.
-func (c *serviceIPPools) Watch(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
+func (c *serviceIPPools) Watch(opts v1.ListOptions) (watch.Interface, error) {
 	var timeout time.Duration
 	if opts.TimeoutSeconds != nil {
 		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
@@ -109,20 +108,20 @@ func (c *serviceIPPools) Watch(ctx context.Context, opts v1.ListOptions) (watch.
 }
 
 // Create takes the representation of a serviceIPPool and creates it.  Returns the server's representation of the serviceIPPool, and an error, if there is any.
-func (c *serviceIPPools) Create(ctx context.Context, serviceIPPool *v1alpha1.ServiceIPPool, opts v1.CreateOptions) (result *v1alpha1.ServiceIPPool, err error) {
+func (c *serviceIPPools) Create(serviceIPPool *v1alpha1.ServiceIPPool, opts v1.CreateOptions) (result *v1alpha1.ServiceIPPool, err error) {
 	result = &v1alpha1.ServiceIPPool{}
 	err = c.client.Post().
 		Namespace(c.ns).
 		Resource("serviceippools").
 		VersionedParams(&opts, scheme.ParameterCodec).
 		Body(serviceIPPool).
-		Do(ctx).
+		Do().
 		Into(result)
 	return
 }
 
 // Update takes the representation of a serviceIPPool and updates it. Returns the server's representation of the serviceIPPool, and an error, if there is any.
-func (c *serviceIPPools) Update(ctx context.Context, serviceIPPool *v1alpha1.ServiceIPPool, opts v1.UpdateOptions) (result *v1alpha1.ServiceIPPool, err error) {
+func (c *serviceIPPools) Update(serviceIPPool *v1alpha1.ServiceIPPool, opts v1.UpdateOptions) (result *v1alpha1.ServiceIPPool, err error) {
 	result = &v1alpha1.ServiceIPPool{}
 	err = c.client.Put().
 		Namespace(c.ns).
@@ -130,24 +129,24 @@ func (c *serviceIPPools) Update(ctx context.Context, serviceIPPool *v1alpha1.Ser
 		Name(serviceIPPool.Name).
 		VersionedParams(&opts, scheme.ParameterCodec).
 		Body(serviceIPPool).
-		Do(ctx).
+		Do().
 		Into(result)
 	return
 }
 
 // Delete takes name of the serviceIPPool and deletes it. Returns an error if one occurs.
-func (c *serviceIPPools) Delete(ctx context.Context, name string, opts v1.DeleteOptions) error {
+func (c *serviceIPPools) Delete(name string, opts v1.DeleteOptions) error {
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("serviceippools").
 		Name(name).
 		Body(&opts).
-		Do(ctx).
+		Do().
 		Error()
 }
 
 // DeleteCollection deletes a collection of objects.
-func (c *serviceIPPools) DeleteCollection(ctx context.Context, opts v1.DeleteOptions, listOpts v1.ListOptions) error {
+func (c *serviceIPPools) DeleteCollection(opts v1.DeleteOptions, listOpts v1.ListOptions) error {
 	var timeout time.Duration
 	if listOpts.TimeoutSeconds != nil {
 		timeout = time.Duration(*listOpts.TimeoutSeconds) * time.Second
@@ -158,12 +157,12 @@ func (c *serviceIPPools) DeleteCollection(ctx context.Context, opts v1.DeleteOpt
 		VersionedParams(&listOpts, scheme.ParameterCodec).
 		Timeout(timeout).
 		Body(&opts).
-		Do(ctx).
+		Do().
 		Error()
 }
 
 // Patch applies the patch and returns the patched serviceIPPool.
-func (c *serviceIPPools) Patch(ctx context.Context, name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ServiceIPPool, err error) {
+func (c *serviceIPPools) Patch(name string, pt types.PatchType, data []byte, opts v1.PatchOptions, subresources ...string) (result *v1alpha1.ServiceIPPool, err error) {
 	result = &v1alpha1.ServiceIPPool{}
 	err = c.client.Patch(pt).
 		Namespace(c.ns).
@@ -172,7 +171,7 @@ func (c *serviceIPPools) Patch(ctx context.Context, name string, pt types.PatchT
 		SubResource(subresources...).
 		VersionedParams(&opts, scheme.ParameterCodec).
 		Body(data).
-		Do(ctx).
+		Do().
 		Into(result)
 	return
 }

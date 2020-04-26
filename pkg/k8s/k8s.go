@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	labelutil "k8s.io/apimachinery/pkg/labels"
 	"net"
 	"os"
 	"strings"
@@ -169,7 +168,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 
 	var ports []api.EndpointPort
 	var profiles []string
-	//var generateName string
+	var generateName string
 
 	// Only attempt to fetch the labels and annotations from Kubernetes
 	// if the policy type has been set to "k8s". This allows users to
@@ -182,7 +181,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 		}
 		logger.WithField("NS Annotations", annotNS).Debug("Fetched K8s namespace annotations")
 
-		labels, annot, podLabels, ports, profiles, _, err := getK8sPodInfo(client, epIDs.Pod, epIDs.Namespace)
+		labels, annot, ports, profiles, generateName, err = getK8sPodInfo(client, epIDs.Pod, epIDs.Namespace)
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +209,7 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 					return nil, err
 				}
 				//通过label查该pod对应的所有servicepool,包含IPv4和ipv6的IPPool信息
-				svcPool, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).Get(context.TODO(), serviceIPv4Pool, metav1.GetOptions{})
+				svcPool, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).Get(serviceIPv4Pool, metav1.GetOptions{})
 				if err != nil {
 					return nil, err
 				}
@@ -854,17 +853,17 @@ func getK8sNSInfo(client *kubernetes.Clientset, podNamespace string) (annotation
 	return ns.Annotations, nil
 }
 
-func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (labels map[string]string, annotations map[string]string, podLabels map[string]string, ports []api.EndpointPort, profiles []string, generateName string, err error) {
+func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (labels map[string]string, annotations map[string]string, ports []api.EndpointPort, profiles []string, generateName string, err error) {
 	pod, err := client.CoreV1().Pods(string(podNamespace)).Get(podName, metav1.GetOptions{})
 	logrus.Infof("pod info %+v", pod)
 	if err != nil {
-		return nil, nil, nil, nil, nil, "", err
+		return nil, nil, nil, nil, "", err
 	}
 
 	var c k8sconversion.Converter
 	kvp, err := c.PodToWorkloadEndpoint(pod)
 	if err != nil {
-		return nil, nil, nil, nil, nil, "", err
+		return nil, nil, nil, nil, "", err
 	}
 
 	ports = kvp.Value.(*api.WorkloadEndpoint).Spec.Ports
@@ -872,7 +871,7 @@ func getK8sPodInfo(client *kubernetes.Clientset, podName, podNamespace string) (
 	profiles = kvp.Value.(*api.WorkloadEndpoint).Spec.Profiles
 	generateName = kvp.Value.(*api.WorkloadEndpoint).GenerateName
 
-	return labels, pod.Annotations, pod.Labels, ports, profiles, generateName, nil
+	return labels, pod.Annotations, ports, profiles, generateName, nil
 }
 
 func getPodCidr(client *kubernetes.Clientset, conf types.NetConf, nodename string) (string, error) {
