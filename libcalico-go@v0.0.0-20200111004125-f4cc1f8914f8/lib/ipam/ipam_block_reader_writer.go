@@ -599,6 +599,8 @@ func randomBlockGenerator(ipPool v3.IPPool, hostName string) func() *cnet.IPNet 
 		if numReturned.Cmp(numBlocks) >= 0 {
 			// Index finished one full circle across the blocks
 			// Used all of the blocks in this pool.
+			//索引在块上完成了一个完整的圆圈// //使用了该池中的所有块。
+			//numReturned>numBlocks
 			return nil
 		}
 		numReturned.Add(numReturned, big.NewInt(1))
