@@ -201,15 +201,15 @@ func CmdAddK8s(ctx context.Context, args *skel.CmdArgs, conf types.NetConf, epID
 			v6pools = annotNS["cni.projectcalico.org/ipv6pools"]
 
 			//获取pod中的anno:serviceIPPoolcrd
-			serviceIPv4Pool := annot["serviceIPPoolcrd"]
+			serviceIPPoolcrd := annot["serviceIPPoolcrd"]
 			var svcV4Pools, svcV6Pools []string
-			if serviceIPv4Pool != "" {
+			if serviceIPPoolcrd != "" {
 				svcPoolClient, err := newSvcPoolClient(conf, logger)
 				if err != nil {
 					return nil, err
 				}
 				//通过label查该pod对应的所有servicepool,包含IPv4和ipv6的IPPool信息
-				svcPool, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).Get(serviceIPv4Pool, metav1.GetOptions{})
+				svcPool, err := svcPoolClient.ServiceippoolV1alpha1().ServiceIPPools(epIDs.Namespace).Get(serviceIPPoolcrd, metav1.GetOptions{})
 				if err != nil {
 					return nil, err
 				}

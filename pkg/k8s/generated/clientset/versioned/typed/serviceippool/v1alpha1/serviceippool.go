@@ -104,7 +104,7 @@ func (c *serviceIPPools) Watch(opts v1.ListOptions) (watch.Interface, error) {
 		Resource("serviceippools").
 		VersionedParams(&opts, scheme.ParameterCodec).
 		Timeout(timeout).
-		Watch(ctx)
+		Watch()
 }
 
 // Create takes the representation of a serviceIPPool and creates it.  Returns the server's representation of the serviceIPPool, and an error, if there is any.
